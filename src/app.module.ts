@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { HealthController } from './health.controller';
 import { AppDataSource } from './data-source';
 import { UserModule } from './user/user.module';
+import { FriendModule } from './friend/friend.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { UserModule } from './user/user.module';
       autoLoadEntities: true,
     }),
     UserModule,
+    FriendModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
