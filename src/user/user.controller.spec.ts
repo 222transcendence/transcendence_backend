@@ -2,7 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { UserController } from './user.controller';
 import { UserService } from './user.service';
 import { User, UserStatus } from './entities/user.entity';
-import { ConflictException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 
 const mockUser: User = {
   id: 'uuid-1234',
@@ -111,6 +111,32 @@ describe('UserController', () => {
       expect(service.findByNickname).toHaveBeenCalledWith('tester');
       expect(service.update).toHaveBeenCalledWith(mockUser.id, updateDto);
       expect(result.nickname).toBe('tester');
+    });
+  });
+
+  describe('uploadAvatar', () => {
+    const mockFile = {
+      filename: 'generated-uuid.png',
+    } as Express.Multer.File;
+
+    it('should upload avatar and return updated profile excluding password', async () => {
+      const updatedUser = { ...mockUser, avatar: '/uploads/avatars/generated-uuid.png' };
+      mockUserService.update.mockResolvedValue(updatedUser);
+
+      const result = await controller.uploadAvatar(mockUser, mockFile);
+
+      expect(service.update).toHaveBeenCalledWith(mockUser.id, {
+        avatar: '/uploads/avatars/generated-uuid.png',
+      });
+      expect(result).not.toHaveProperty('password');
+      expect(result.avatar).toBe('/uploads/avatars/generated-uuid.png');
+    });
+
+    it('should throw BadRequestException when no file is provided', async () => {
+      await expect(
+        controller.uploadAvatar(mockUser, undefined as unknown as Express.Multer.File),
+      ).rejects.toThrow(BadRequestException);
+      expect(service.update).not.toHaveBeenCalled();
     });
   });
 });
