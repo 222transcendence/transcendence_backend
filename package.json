@@ -38,6 +38,7 @@
     "ioredis": "^5.4.1",
     "multer": "^2.2.0",
     "passport": "^0.7.0",
+    "passport-42": "^1.2.6",
     "passport-jwt": "^4.0.1",
     "passport-local": "^1.0.0",
     "pg": "^8.11.3",

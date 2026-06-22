@@ -1,8 +1,9 @@
-import { Controller, Post, Body, UseGuards, Request } from '@nestjs/common';
+import { Controller, Post, Body, UseGuards, Request, Get } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { SignupDto } from './dto/signup.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
+import { FtAuthGuard } from './guards/ft-auth.guard';
 import { LoginDto } from './dto/login.dto';
 
 @Controller('api/auth')
@@ -30,5 +31,17 @@ export class AuthController {
   async logout(@Request() req) {
     await this.authService.logout(req.user.id);
     return { success: true };
+  }
+
+  @UseGuards(FtAuthGuard)
+  @Get('42')
+  async ftAuth() {
+    // passport redirects to 42 authorization page
+  }
+
+  @UseGuards(FtAuthGuard)
+  @Get('42/callback')
+  async ftAuthCallback(@Request() req) {
+    return this.authService.login(req.user);
   }
 }
