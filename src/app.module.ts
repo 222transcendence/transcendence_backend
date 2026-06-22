@@ -11,6 +11,7 @@ import { AuthModule } from './auth/auth.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { ChatModule } from './chat/chat.module';
 import { GameGatewayModule } from './game/game-gateway.module';
+import { GameModule } from './game/game.module';
 
 @Module({
   imports: [
@@ -25,6 +26,7 @@ import { GameGatewayModule } from './game/game-gateway.module';
     MetricsModule,
     ChatModule,
     GameGatewayModule,
+    GameModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
