@@ -100,4 +100,25 @@ export class AuthService {
     await this.redisService.del(`refresh_token:${userId}`);
     await this.userService.update(userId, { status: UserStatus.OFFLINE });
   }
+
+  async validateOrCreateFtUser(ftUser: {
+    email: string;
+    username: string;
+    avatar: string;
+  }): Promise<User> {
+    let user = await this.userService.findByEmail(ftUser.email);
+    if (!user) {
+      let nickname = ftUser.username;
+      const existingByNickname = await this.userService.findByNickname(nickname);
+      if (existingByNickname) {
+        nickname = `${ftUser.username}_${Math.floor(Math.random() * 1000)}`;
+      }
+      user = await this.userService.create({
+        email: ftUser.email,
+        nickname,
+        avatar: ftUser.avatar,
+      });
+    }
+    return user;
+  }
 }
