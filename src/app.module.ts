@@ -9,6 +9,7 @@ import { FriendModule } from './friend/friend.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { MetricsModule } from './metrics/metrics.module';
+import { ChatModule } from './chat/chat.module';
 
 @Module({
   imports: [
@@ -21,6 +22,7 @@ import { MetricsModule } from './metrics/metrics.module';
     RedisModule,
     AuthModule,
     MetricsModule,
+    ChatModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
