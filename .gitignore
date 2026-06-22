@@ -2,6 +2,10 @@
 /dist
 /node_modules
 
+# uploaded user content
+/uploads/avatars/*
+!/uploads/avatars/.gitkeep
+
 # Logs
 logs
 *.log
