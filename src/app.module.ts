@@ -5,6 +5,7 @@ import { AppService } from './app.service';
 import { HealthController } from './health.controller';
 import { AppDataSource } from './data-source';
 import { UserModule } from './user/user.module';
+import { FriendModule } from './friend/friend.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 
@@ -15,6 +16,7 @@ import { AuthModule } from './auth/auth.module';
       autoLoadEntities: true,
     }),
     UserModule,
+    FriendModule,
     RedisModule,
     AuthModule,
   ],
