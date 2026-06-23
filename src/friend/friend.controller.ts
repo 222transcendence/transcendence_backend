@@ -1,70 +1,56 @@
 import {
-  BadRequestException,
   Body,
   Controller,
   Delete,
   Get,
-  Headers,
   Param,
   Patch,
   Post,
+  UseGuards,
 } from '@nestjs/common';
 import { FriendService } from './friend.service';
 import { RespondFriendRequestDto } from './dto/respond-friend-request.dto';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { User } from '../user/entities/user.entity';
 
 @Controller('api/friends')
+@UseGuards(JwtAuthGuard)
 export class FriendController {
   constructor(private readonly friendService: FriendService) {}
 
-  // Auth merge 전 임시 처리: current user는 x-user-id 헤더로 전달받습니다.
   @Post(':userId')
   async sendFriendRequest(
-    @Headers('x-user-id') currentUserId: string,
+    @CurrentUser() user: User,
     @Param('userId') targetUserId: string,
   ) {
-    this.validateCurrentUserHeader(currentUserId);
-    return await this.friendService.sendFriendRequest(
-      currentUserId,
-      targetUserId,
-    );
+    return await this.friendService.sendFriendRequest(user.id, targetUserId);
   }
 
-  // Auth merge 전 임시 처리: current user는 x-user-id 헤더로 전달받습니다.
   @Patch(':requestId')
   async respondFriendRequest(
-    @Headers('x-user-id') currentUserId: string,
+    @CurrentUser() user: User,
     @Param('requestId') requestId: string,
     @Body() body: RespondFriendRequestDto,
   ) {
-    this.validateCurrentUserHeader(currentUserId);
     return await this.friendService.respondFriendRequest(
-      currentUserId,
+      user.id,
       requestId,
       body.action,
     );
   }
 
-  // Auth merge 전 임시 처리: current user는 x-user-id 헤더로 전달받습니다.
   @Delete(':userId')
   async removeFriend(
-    @Headers('x-user-id') currentUserId: string,
+    @CurrentUser() user: User,
     @Param('userId') friendUserId: string,
   ) {
-    this.validateCurrentUserHeader(currentUserId);
-    await this.friendService.removeFriend(currentUserId, friendUserId);
+    await this.friendService.removeFriend(user.id, friendUserId);
     return { deleted: true };
   }
 
-  // Auth merge 전 임시 처리: current user는 x-user-id 헤더로 전달받습니다.
   @Get()
-  async getFriends(@Headers('x-user-id') currentUserId: string) {
-    this.validateCurrentUserHeader(currentUserId);
-    return await this.friendService.getFriends(currentUserId);
-  }
-
-  private validateCurrentUserHeader(currentUserId?: string): void {
-    if (!currentUserId) {
-      throw new BadRequestException('x-user-id header is required');
-    }
+  async getFriends(@CurrentUser() user: User) {
+    return await this.friendService.getFriends(user.id);
   }
 }
