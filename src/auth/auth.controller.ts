@@ -1,4 +1,13 @@
-import { Controller, Post, Body, UseGuards, Request, Get } from '@nestjs/common';
+import {
+  Controller,
+  Post,
+  Body,
+  UseGuards,
+  Request,
+  Get,
+  Res,
+} from '@nestjs/common';
+import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { SignupDto } from './dto/signup.dto';
 import { LocalAuthGuard } from './guards/local-auth.guard';
@@ -41,7 +50,16 @@ export class AuthController {
 
   @UseGuards(FtAuthGuard)
   @Get('42/callback')
-  async ftAuthCallback(@Request() req) {
-    return this.authService.login(req.user);
+  async ftAuthCallback(@Request() req, @Res() res: Response) {
+    // The browser navigates here directly (42's redirect), so the SPA can't
+    // intercept this response via fetch/XHR. Hand the tokens off via a
+    // redirect to a frontend route that stores them, instead of returning
+    // JSON the user would see as raw text.
+    const { accessToken, refreshToken } = await this.authService.login(
+      req.user,
+    );
+    res.redirect(
+      `/oauth/callback?accessToken=${accessToken}&refreshToken=${refreshToken}`,
+    );
   }
 }
