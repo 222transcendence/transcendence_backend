@@ -10,6 +10,7 @@ import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { MetricsModule } from './metrics/metrics.module';
 import { ChatModule } from './chat/chat.module';
+import { GameGatewayModule } from './game/game-gateway.module';
 
 @Module({
   imports: [
@@ -23,6 +24,7 @@ import { ChatModule } from './chat/chat.module';
     AuthModule,
     MetricsModule,
     ChatModule,
+    GameGatewayModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
