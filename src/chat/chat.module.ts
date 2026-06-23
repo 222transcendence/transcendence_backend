@@ -6,6 +6,7 @@ import { ChatService } from './chat.service';
 import { ChatController } from './chat.controller';
 import { ChatGateway } from './chat.gateway';
 import { UserModule } from '../user/user.module';
+import { FriendModule } from '../friend/friend.module';
 
 @Module({
   imports: [
@@ -15,6 +16,7 @@ import { UserModule } from '../user/user.module';
       signOptions: { expiresIn: '15m' },
     }),
     UserModule,
+    FriendModule,
   ],
   providers: [ChatGateway, ChatService],
   controllers: [ChatController],

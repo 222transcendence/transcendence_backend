@@ -15,7 +15,13 @@ import { JwtService } from '@nestjs/jwt';
 import { ChatService } from './chat.service';
 import { SendMessageDto } from './dto/send-message.dto';
 import { UserService } from '../user/user.service';
+import { FriendService } from '../friend/friend.service';
+import { RedisService } from '../redis/redis.service';
 import { MessageType } from './entities/chat-message.entity';
+
+export type OnlineStatus = 'ONLINE' | 'OFFLINE' | 'IN_GAME';
+
+const USER_STATUS_TTL = 86400; // 24h fallback TTL
 
 @WebSocketGateway({ namespace: '/chat', cors: { origin: '*' } })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
@@ -24,10 +30,17 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
   private readonly logger = new Logger(ChatGateway.name);
 
+  // userId → Set of socketIds (user may have multiple tabs)
+  private readonly userSockets = new Map<string, Set<string>>();
+  // socketId → userId
+  private readonly socketUser = new Map<string, string>();
+
   constructor(
     private readonly chatService: ChatService,
     private readonly jwtService: JwtService,
     private readonly userService: UserService,
+    private readonly friendService: FriendService,
+    private readonly redisService: RedisService,
   ) {}
 
   async handleConnection(client: Socket) {
@@ -38,6 +51,11 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       });
       const user = await this.userService.findOne(payload.sub);
       client.data.user = user;
+
+      this.trackSocket(user.id, client.id);
+      await this.setUserStatus(user.id, 'ONLINE');
+      await this.notifyFriends(user.id, 'ONLINE');
+
       this.logger.log(`Client connected: ${client.id} (user: ${user.nickname})`);
     } catch {
       this.logger.warn(`Unauthorized connection: ${client.id} — disconnecting`);
@@ -45,9 +63,19 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  handleDisconnect(client: Socket) {
-    const nickname = client.data.user?.nickname ?? client.id;
+  async handleDisconnect(client: Socket) {
+    const user = client.data.user;
+    const nickname = user?.nickname ?? client.id;
     this.logger.log(`Client disconnected: ${client.id} (user: ${nickname})`);
+
+    if (user) {
+      this.untrackSocket(user.id, client.id);
+      // Only go OFFLINE when all sockets for this user are gone
+      if (!this.userSockets.has(user.id)) {
+        await this.setUserStatus(user.id, 'OFFLINE');
+        await this.notifyFriends(user.id, 'OFFLINE');
+      }
+    }
   }
 
   @UsePipes(new ValidationPipe({
@@ -88,8 +116,53 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     return payload;
   }
 
+  async setUserStatus(userId: string, status: OnlineStatus): Promise<void> {
+    await this.redisService.set(`user:${userId}:status`, status, USER_STATUS_TTL);
+  }
+
+  async getUserStatus(userId: string): Promise<OnlineStatus | null> {
+    const val = await this.redisService.get(`user:${userId}:status`);
+    return (val as OnlineStatus) ?? null;
+  }
+
+  private trackSocket(userId: string, socketId: string) {
+    if (!this.userSockets.has(userId)) {
+      this.userSockets.set(userId, new Set());
+    }
+    this.userSockets.get(userId)!.add(socketId);
+    this.socketUser.set(socketId, userId);
+  }
+
+  private untrackSocket(userId: string, socketId: string) {
+    this.socketUser.delete(socketId);
+    const sockets = this.userSockets.get(userId);
+    if (sockets) {
+      sockets.delete(socketId);
+      if (sockets.size === 0) {
+        this.userSockets.delete(userId);
+      }
+    }
+  }
+
+  private async notifyFriends(userId: string, status: OnlineStatus) {
+    try {
+      const friends = await this.friendService.getFriends(userId);
+      const payload = { userId, status };
+
+      for (const friend of friends) {
+        const friendSockets = this.userSockets.get(friend.id);
+        if (friendSockets) {
+          for (const socketId of friendSockets) {
+            this.server.to(socketId).emit('friend_status_update', payload);
+          }
+        }
+      }
+    } catch {
+      this.logger.warn(`Failed to notify friends for user ${userId}`);
+    }
+  }
+
   private extractToken(client: Socket): string {
-    // Support: auth.token or query.token
     const authToken: string | undefined =
       client.handshake.auth?.token ?? client.handshake.query?.token;
 
@@ -97,7 +170,6 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       throw new WsException('Missing token');
     }
 
-    // Strip "Bearer " prefix if present
     return authToken.startsWith('Bearer ')
       ? authToken.slice(7)
       : authToken;
