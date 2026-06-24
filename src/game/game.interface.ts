@@ -22,6 +22,17 @@ export interface PlayerSession {
   cardsSubmitted: number[]; // 현재 페이즈에 제출한 카드 ID 목록
 }
 
+export interface StatusEffect {
+  type: 'POISON' | 'REGEN' | 'CONFUSE' | 'STUN';
+  duration: number; // 남은 턴 수
+}
+
+export interface DiceDetail {
+  count: number;
+  successes: number;
+  details: boolean[];
+}
+
 export interface GameRoom {
   id: string;
   status: RoomStatus;
@@ -31,8 +42,17 @@ export interface GameRoom {
   distance: number;
   currentTurn: number;
   statusEffects: {
-    host: string[];
-    guest: string[];
+    host: StatusEffect[];
+    guest: StatusEffect[];
   };
+  initiative?: 'host' | 'guest' | null; // 선공권 필드 추가
+  lastDiceRoll?: {
+    hostAtk?: DiceDetail;
+    guestAtk?: DiceDetail;
+    hostDef?: DiceDetail;
+    guestDef?: DiceDetail;
+  } | null;
+  lastActionLog?: string[]; // 전투 중 발생한 스킬/상태이상 알림 로그
   winnerId?: string;
 }
+
