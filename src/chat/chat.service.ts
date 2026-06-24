@@ -27,10 +27,23 @@ export class ChatService {
     return await this.chatMessageRepository.save(message);
   }
 
-  async getHistory(): Promise<ChatMessage[]> {
-    return await this.chatMessageRepository.find({
+  async getHistory() {
+    const messages = await this.chatMessageRepository.find({
       order: { createdAt: 'ASC' },
       take: HISTORY_LIMIT,
     });
+
+    return messages.map((msg) => ({
+      id: msg.id,
+      content: msg.content,
+      roomId: msg.roomId,
+      type: msg.type,
+      createdAt: msg.createdAt,
+      sender: {
+        id: msg.sender.id,
+        nickname: msg.sender.nickname,
+        avatar: msg.sender.avatar,
+      },
+    }));
   }
 }

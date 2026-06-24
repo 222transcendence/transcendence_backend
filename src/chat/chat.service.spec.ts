@@ -87,16 +87,18 @@ describe('ChatService', () => {
   });
 
   describe('getHistory', () => {
-    it('should return up to 50 messages ordered by createdAt ASC', async () => {
-      const msgs = [{ id: 'uuid-1' }, { id: 'uuid-2' }] as ChatMessage[];
+    it('should return up to 50 messages with sanitized sender fields', async () => {
+      const sender = { id: 'user-1', nickname: 'Alice', avatar: 'avatar.png', password: 'secret', email: 'a@b.com' };
+      const msgs = [
+        { id: 'uuid-1', content: 'hi', roomId: null, type: MessageType.NORMAL, createdAt: new Date(), sender },
+      ] as unknown as ChatMessage[];
       repo.find.mockResolvedValue(msgs);
 
       const result = await service.getHistory();
-      expect(repo.find).toHaveBeenCalledWith({
-        order: { createdAt: 'ASC' },
-        take: 50,
-      });
-      expect(result).toBe(msgs);
+      expect(repo.find).toHaveBeenCalledWith({ order: { createdAt: 'ASC' }, take: 50 });
+      expect(result[0].sender).toEqual({ id: 'user-1', nickname: 'Alice', avatar: 'avatar.png' });
+      expect((result[0].sender as any).password).toBeUndefined();
+      expect((result[0].sender as any).email).toBeUndefined();
     });
   });
 });
