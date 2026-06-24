@@ -10,6 +10,7 @@ import {
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
 import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
+import { ValidationError } from 'class-validator';
 import { JwtService } from '@nestjs/jwt';
 import { ChatService } from './chat.service';
 import { SendMessageDto } from './dto/send-message.dto';
@@ -49,7 +50,10 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     this.logger.log(`Client disconnected: ${client.id} (user: ${nickname})`);
   }
 
-  @UsePipes(new ValidationPipe({ whitelist: true }))
+  @UsePipes(new ValidationPipe({
+    whitelist: true,
+    exceptionFactory: (errors: ValidationError[]) => new WsException(errors),
+  }))
   @SubscribeMessage('send_message')
   async handleMessage(
     @ConnectedSocket() client: Socket,
