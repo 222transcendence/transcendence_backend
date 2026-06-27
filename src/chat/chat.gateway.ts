@@ -23,7 +23,7 @@ export type OnlineStatus = 'ONLINE' | 'OFFLINE' | 'IN_GAME';
 
 const USER_STATUS_TTL = 86400; // 24h fallback TTL
 
-@WebSocketGateway({ namespace: '/chat', cors: { origin: '*' } })
+@WebSocketGateway({ namespace: '/chat', path: '/socketio', cors: { origin: '*' } })
 export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
   @WebSocketServer()
   server: Server;

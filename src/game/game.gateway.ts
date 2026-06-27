@@ -14,7 +14,7 @@ interface GameSocketData {
   user?: User;
 }
 
-@WebSocketGateway({ namespace: '/game', cors: { origin: '*' } })
+@WebSocketGateway({ namespace: '/game', path: '/socketio', cors: { origin: '*' } })
 export class GameGateway implements OnGatewayConnection, OnGatewayDisconnect {
   private readonly logger = new Logger(GameGateway.name);
 
