@@ -3,6 +3,8 @@ import { ChatGateway } from './chat.gateway';
 import { ChatService } from './chat.service';
 import { JwtService } from '@nestjs/jwt';
 import { UserService } from '../user/user.service';
+import { FriendService } from '../friend/friend.service';
+import { RedisService } from '../redis/redis.service';
 import { MessageType } from './entities/chat-message.entity';
 import { WsException } from '@nestjs/websockets';
 
@@ -18,6 +20,8 @@ describe('ChatGateway', () => {
   };
   const mockJwtService = { verify: jest.fn() };
   const mockUserService = { findOne: jest.fn() };
+  const mockFriendService = { getFriends: jest.fn().mockResolvedValue([]) };
+  const mockRedisService = { set: jest.fn(), get: jest.fn(), del: jest.fn() };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
@@ -26,6 +30,8 @@ describe('ChatGateway', () => {
         { provide: ChatService, useValue: mockChatService },
         { provide: JwtService, useValue: mockJwtService },
         { provide: UserService, useValue: mockUserService },
+        { provide: FriendService, useValue: mockFriendService },
+        { provide: RedisService, useValue: mockRedisService },
       ],
     }).compile();
 
@@ -35,7 +41,7 @@ describe('ChatGateway', () => {
     userService = module.get<UserService>(UserService);
 
     // mock server
-    gateway.server = { emit: jest.fn() } as any;
+    gateway.server = { emit: jest.fn(), to: jest.fn().mockReturnThis() } as any;
   });
 
   afterEach(() => jest.clearAllMocks());

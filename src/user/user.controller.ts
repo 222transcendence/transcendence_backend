@@ -10,7 +10,6 @@ import {
   UploadedFile,
   BadRequestException,
   ConflictException,
-  NotFoundException,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { UserService } from './user.service';
@@ -19,11 +18,15 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { User } from './entities/user.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { avatarUploadOptions, AVATAR_URL_PREFIX } from './avatar-upload.config';
+import { RedisService } from '../redis/redis.service';
 
 @Controller('api/users')
 @UseGuards(JwtAuthGuard)
 export class UserController {
-  constructor(private readonly userService: UserService) {}
+  constructor(
+    private readonly userService: UserService,
+    private readonly redisService: RedisService,
+  ) {}
 
   @Get('me')
   async getMe(@CurrentUser() user: User) {
@@ -36,6 +39,13 @@ export class UserController {
     const targetUser = await this.userService.findOne(id);
     const { password, email, ...result } = targetUser;
     return result;
+  }
+
+  @Get(':id/status')
+  async getUserStatus(@Param('id') id: string) {
+    await this.userService.findOne(id); // 404 if not found
+    const cached = await this.redisService.get(`user:${id}:status`);
+    return { status: cached ?? 'OFFLINE' };
   }
 
   @Patch('me')
