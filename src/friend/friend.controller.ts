@@ -49,6 +49,11 @@ export class FriendController {
     return { deleted: true };
   }
 
+  @Get('requests')
+  async getPendingRequests(@CurrentUser() user: User) {
+    return await this.friendService.getPendingRequests(user.id);
+  }
+
   @Get()
   async getFriends(@CurrentUser() user: User) {
     return await this.friendService.getFriends(user.id);
