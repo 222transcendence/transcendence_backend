@@ -96,9 +96,20 @@ export class AuthService {
     }
   }
 
-  async logout(userId: string) {
+  async logout(userId: string, accessToken?: string) {
     await this.redisService.del(`refresh_token:${userId}`);
     await this.userService.update(userId, { status: UserStatus.OFFLINE });
+
+    if (accessToken) {
+      const decoded = this.jwtService.decode(accessToken) as { exp?: number; jti?: string } | null;
+      if (decoded?.exp) {
+        const ttl = decoded.exp - Math.floor(Date.now() / 1000);
+        if (ttl > 0) {
+          const key = decoded.jti ?? accessToken.slice(-32);
+          await this.redisService.set(`auth:blacklist:${key}`, '1', ttl);
+        }
+      }
+    }
   }
 
   async validateOrCreateFtUser(ftUser: {
