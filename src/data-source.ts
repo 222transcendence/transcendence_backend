@@ -2,6 +2,7 @@ import { DataSource } from 'typeorm';
 import { User } from './user/entities/user.entity';
 import { Friend } from './friend/entities/friend.entity';
 import { DbQueryLogger } from './metrics/db-query.logger';
+import { ChatMessage } from './chat/entities/chat-message.entity';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -16,7 +17,7 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [User, Friend],
+  entities: [User, Friend, ChatMessage],
   migrations: [__dirname + '/migrations/*.ts', __dirname + '/migrations/*.js'],
   synchronize: false,
   logger: new DbQueryLogger(),
