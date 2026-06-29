@@ -115,12 +115,12 @@ describe('GameEngine', () => {
       // damage to host = 2 - 2 = 0 => hp: 10 -> 10
       const nextRoom = handleResultPhase(mockRoom, 3, 2, 2, 2, () => 0.1);
       expect(nextRoom.host.hp).toBe(10);
-      expect(nextRoom.guest.hp).toBe(9);
+      expect(nextRoom.guest!.hp).toBe(9);
     });
 
     it('should declare finished status with winner guest if host hp <= 0', () => {
       mockRoom.host.hp = 1;
-      mockRoom.guest.hp = 10;
+      mockRoom.guest!.hp = 10;
       const nextRoom = handleResultPhase(mockRoom, 0, 0, 5, 0, () => 0.1);
       expect(nextRoom.status).toBe(RoomStatus.FINISHED);
       expect(nextRoom.winnerId).toBe('guest-1');
