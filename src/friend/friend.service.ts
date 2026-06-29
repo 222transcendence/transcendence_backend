@@ -10,6 +10,12 @@ import { Repository } from 'typeorm';
 import { Friend, FriendStatus } from './entities/friend.entity';
 import { User } from '../user/entities/user.entity';
 
+type SafeUser = Pick<User, 'id' | 'nickname' | 'status' | 'avatar'>;
+
+function sanitizeUser(user: User): SafeUser {
+  return { id: user.id, nickname: user.nickname, status: user.status, avatar: user.avatar };
+}
+
 @Injectable()
 export class FriendService {
   constructor(
@@ -22,7 +28,7 @@ export class FriendService {
   async sendFriendRequest(
     currentUserId: string,
     targetUserId: string,
-  ): Promise<Friend> {
+  ): Promise<{ id: string; requester: SafeUser; receiver: SafeUser; status: FriendStatus; createdAt: Date }> {
     if (currentUserId === targetUserId) {
       throw new BadRequestException('Cannot send friend request to yourself');
     }
@@ -53,14 +59,21 @@ export class FriendService {
       status: FriendStatus.PENDING,
     });
 
-    return await this.friendRepository.save(friendRequest);
+    const saved = await this.friendRepository.save(friendRequest);
+    return {
+      id: saved.id,
+      requester: sanitizeUser(saved.requester),
+      receiver: sanitizeUser(saved.receiver),
+      status: saved.status,
+      createdAt: saved.createdAt,
+    };
   }
 
   async respondFriendRequest(
     currentUserId: string,
     requestId: string,
     action: 'accept' | 'reject',
-  ): Promise<Friend | { deleted: true }> {
+  ): Promise<{ id: string; requester: SafeUser; receiver: SafeUser; status: FriendStatus; createdAt: Date } | { deleted: true }> {
     if (action !== 'accept' && action !== 'reject') {
       throw new BadRequestException('action must be accept or reject');
     }
@@ -82,7 +95,14 @@ export class FriendService {
 
     if (action === 'accept') {
       request.status = FriendStatus.ACCEPTED;
-      return await this.friendRepository.save(request);
+      const saved = await this.friendRepository.save(request);
+      return {
+        id: saved.id,
+        requester: sanitizeUser(saved.requester),
+        receiver: sanitizeUser(saved.receiver),
+        status: saved.status,
+        createdAt: saved.createdAt,
+      };
     }
 
     await this.friendRepository.remove(request);
@@ -143,6 +163,19 @@ export class FriendService {
         status: friendUser.status,
       };
     });
+  }
+
+  async getPendingRequests(
+    currentUserId: string,
+  ): Promise<{ id: string; requester: SafeUser; createdAt: Date }[]> {
+    const requests = await this.friendRepository.find({
+      where: { receiver: { id: currentUserId }, status: FriendStatus.PENDING },
+    });
+    return requests.map((r) => ({
+      id: r.id,
+      requester: sanitizeUser(r.requester),
+      createdAt: r.createdAt,
+    }));
   }
 
   private async findRelationBetweenUsers(
