@@ -8,6 +8,10 @@ import { UserModule } from './user/user.module';
 import { FriendModule } from './friend/friend.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
+import { MetricsModule } from './metrics/metrics.module';
+import { ChatModule } from './chat/chat.module';
+import { GameGatewayModule } from './game/game-gateway.module';
+import { GameModule } from './game/game.module';
 
 @Module({
   imports: [
@@ -19,6 +23,10 @@ import { AuthModule } from './auth/auth.module';
     FriendModule,
     RedisModule,
     AuthModule,
+    MetricsModule,
+    ChatModule,
+    GameGatewayModule,
+    GameModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],

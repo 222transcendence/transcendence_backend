@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { UserController } from './user.controller';
 import { UserService } from './user.service';
+import { RedisService } from '../redis/redis.service';
 import { User, UserStatus } from './entities/user.entity';
 import { BadRequestException, ConflictException, NotFoundException } from '@nestjs/common';
 
@@ -26,15 +27,14 @@ describe('UserController', () => {
     findByNickname: jest.fn(),
     update: jest.fn(),
   };
+  const mockRedisService = { set: jest.fn(), get: jest.fn().mockResolvedValue(null), del: jest.fn() };
 
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       controllers: [UserController],
       providers: [
-        {
-          provide: UserService,
-          useValue: mockUserService,
-        },
+        { provide: UserService, useValue: mockUserService },
+        { provide: RedisService, useValue: mockRedisService },
       ],
     }).compile();
 
