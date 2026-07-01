@@ -4,6 +4,7 @@ import {
   Post,
   Body,
   Param,
+  Query,
   UseGuards,
   Req,
 } from '@nestjs/common';
@@ -83,5 +84,33 @@ export class GameController {
       data: room,
       error: null,
     };
+  }
+
+  // ─── #21 Stats & Leaderboard ────────────────────────────────────────────
+
+  @Get('users/:id/stats')
+  async getUserStats(@Param('id') userId: string) {
+    const data = await this.gameService.getUserStats(userId);
+    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
+  }
+
+  @Get('users/:id/matches')
+  async getUserMatches(
+    @Param('id') userId: string,
+    @Query('page') page = '1',
+    @Query('limit') limit = '10',
+  ) {
+    const data = await this.gameService.getUserMatches(
+      userId,
+      Math.max(1, parseInt(page)),
+      Math.min(50, parseInt(limit)),
+    );
+    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
+  }
+
+  @Get('leaderboard')
+  async getLeaderboard() {
+    const data = await this.gameService.getLeaderboard();
+    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
   }
 }

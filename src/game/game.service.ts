@@ -66,7 +66,7 @@ export class GameService {
       statusEffects: { host: [], guest: [] },
     };
 
-    await this.redisService.set(roomKey, JSON.stringify(room));
+    await this.redisService.set(roomKey, JSON.stringify(room), 7200);
     return room;
   }
 
@@ -121,7 +121,7 @@ export class GameService {
       guestInitialCards,
     );
 
-    await this.redisService.set(roomKey, JSON.stringify(updatedRoom));
+    await this.redisService.set(roomKey, JSON.stringify(updatedRoom), 7200);
     return updatedRoom;
   }
 
@@ -618,9 +618,71 @@ export class GameService {
 
     await this.matchHistoryRepository.save(history);
 
-    // Redis 룸 정보 삭제
+    // Redis 룸 정보 삭제 (TTL 만료 전에 즉시 삭제)
     const roomKey = `game:room:${room.id}`;
-    await this.redisService.getClient().del(roomKey);
+    await this.redisService.del(roomKey);
   }
 
+  // ─── #21 Stats & Leaderboard ────────────────────────────────────────────
+
+  async getUserStats(userId: string) {
+    const user = await this.userRepository.findOneBy({ id: userId });
+    if (!user) throw new NotFoundException('User not found');
+    const totalGames = user.wins + user.losses;
+    return {
+      wins: user.wins,
+      losses: user.losses,
+      totalGames,
+      winRate: totalGames > 0 ? Math.round((user.wins / totalGames) * 100) / 100 : 0,
+    };
+  }
+
+  async getUserMatches(userId: string, page: number, limit: number) {
+    const [matches, total] = await this.matchHistoryRepository.findAndCount({
+      where: [
+        { hostUser: { id: userId } },
+        { guestUser: { id: userId } },
+      ],
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return { matches, total, page, limit };
+  }
+
+  async getLeaderboard() {
+    const users = await this.userRepository.find({
+      order: { wins: 'DESC' },
+    });
+    return users
+      .filter((u) => u.wins + u.losses > 0)
+      .slice(0, 10)
+      .map((u) => {
+        const totalGames = u.wins + u.losses;
+        return {
+          id: u.id,
+          nickname: u.nickname,
+          avatar: u.avatar,
+          wins: u.wins,
+          losses: u.losses,
+          totalGames,
+          winRate: Math.round((u.wins / totalGames) * 100) / 100,
+        };
+      });
+  }
+
+  // ─── #23 Session helpers ─────────────────────────────────────────────────
+
+  async getRoom(roomId: string): Promise<GameRoom | null> {
+    const data = await this.redisService.get(`game:room:${roomId}`);
+    return data ? (JSON.parse(data) as GameRoom) : null;
+  }
+
+  async setRoomWithTTL(room: GameRoom): Promise<void> {
+    await this.redisService.set(
+      `game:room:${room.id}`,
+      JSON.stringify(room),
+      7200, // 2시간 TTL (#23)
+    );
+  }
 }
