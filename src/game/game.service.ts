@@ -703,10 +703,12 @@ export class GameService {
 
     if (room.host.userId === userId) {
       await this.redisService.getClient().del(roomKey);
+      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
     } else if (room.guest?.userId === userId) {
       room.guest = undefined;
       room.guestReady = false;
       await this.redisService.set(roomKey, JSON.stringify(room), 7200);
+      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
     }
   }
 
