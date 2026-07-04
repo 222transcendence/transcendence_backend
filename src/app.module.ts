@@ -12,6 +12,7 @@ import { MetricsModule } from './metrics/metrics.module';
 import { ChatModule } from './chat/chat.module';
 import { GameGatewayModule } from './game/game-gateway.module';
 import { GameModule } from './game/game.module';
+import { LobbyModule } from './lobby/lobby.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { GameModule } from './game/game.module';
     ChatModule,
     GameGatewayModule,
     GameModule,
+    LobbyModule,
   ],
   controllers: [AppController, HealthController],
   providers: [AppService],
