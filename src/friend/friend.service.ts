@@ -189,4 +189,12 @@ export class FriendService {
       ],
     });
   }
+
+  async sendFriendRequestByNickname(currentUserId: string, nickname: string) {
+    const target = await this.userRepository.findOne({ where: { nickname } });
+    if (!target) {
+      throw new NotFoundException(`User with nickname "${nickname}" not found`);
+    }
+    return this.sendFriendRequest(currentUserId, target.id);
+  }
 }

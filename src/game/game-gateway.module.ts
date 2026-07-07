@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { UserModule } from '../user/user.module';
+import { GameModule } from './game.module';
 import { GameGateway } from './game.gateway';
 
 @Module({
@@ -10,6 +11,7 @@ import { GameGateway } from './game.gateway';
       signOptions: { expiresIn: '15m' },
     }),
     UserModule,
+    GameModule,
   ],
   providers: [GameGateway],
 })

@@ -19,6 +19,14 @@ import { User } from '../user/entities/user.entity';
 export class FriendController {
   constructor(private readonly friendService: FriendService) {}
 
+  @Post('by-nickname/:nickname')
+  async sendFriendRequestByNickname(
+    @CurrentUser() user: User,
+    @Param('nickname') nickname: string,
+  ) {
+    return await this.friendService.sendFriendRequestByNickname(user.id, nickname);
+  }
+
   @Post(':userId')
   async sendFriendRequest(
     @CurrentUser() user: User,

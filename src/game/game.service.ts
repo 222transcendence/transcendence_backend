@@ -64,9 +64,12 @@ export class GameService {
       distance: 3,
       currentTurn: 1,
       statusEffects: { host: [], guest: [] },
-    };
+      createdAt: new Date().toISOString(),
+      hostReady: false,
+      guestReady: false,
+    } as any;
 
-    await this.redisService.set(roomKey, JSON.stringify(room));
+    await this.redisService.set(roomKey, JSON.stringify(room), 7200);
     return room;
   }
 
@@ -121,7 +124,7 @@ export class GameService {
       guestInitialCards,
     );
 
-    await this.redisService.set(roomKey, JSON.stringify(updatedRoom));
+    await this.redisService.set(roomKey, JSON.stringify(updatedRoom), 7200);
     return updatedRoom;
   }
 
@@ -618,9 +621,120 @@ export class GameService {
 
     await this.matchHistoryRepository.save(history);
 
-    // Redis 룸 정보 삭제
+    // Redis 룸 정보 삭제 (TTL 만료 전에 즉시 삭제)
     const roomKey = `game:room:${room.id}`;
-    await this.redisService.getClient().del(roomKey);
+    await this.redisService.del(roomKey);
   }
 
+  // ─── #21 Stats & Leaderboard ────────────────────────────────────────────
+
+  async getUserStats(userId: string) {
+    const user = await this.userRepository.findOneBy({ id: userId });
+    if (!user) throw new NotFoundException('User not found');
+    const totalGames = user.wins + user.losses;
+    return {
+      wins: user.wins,
+      losses: user.losses,
+      totalGames,
+      winRate: totalGames > 0 ? Math.round((user.wins / totalGames) * 100) / 100 : 0,
+    };
+  }
+
+  async getUserMatches(userId: string, page: number, limit: number) {
+    const [matches, total] = await this.matchHistoryRepository.findAndCount({
+      where: [
+        { hostUser: { id: userId } },
+        { guestUser: { id: userId } },
+      ],
+      order: { createdAt: 'DESC' },
+      skip: (page - 1) * limit,
+      take: limit,
+    });
+    return { matches, total, page, limit };
+  }
+
+  async getLeaderboard() {
+    const users = await this.userRepository.find({
+      order: { wins: 'DESC' },
+    });
+    return users
+      .filter((u) => u.wins + u.losses > 0)
+      .slice(0, 10)
+      .map((u) => {
+        const totalGames = u.wins + u.losses;
+        return {
+          id: u.id,
+          nickname: u.nickname,
+          avatar: u.avatar,
+          wins: u.wins,
+          losses: u.losses,
+          totalGames,
+          winRate: Math.round((u.wins / totalGames) * 100) / 100,
+        };
+      });
+  }
+
+  // ─── #23 Session helpers ─────────────────────────────────────────────────
+
+  async getRoom(roomId: string): Promise<GameRoom | null> {
+    const data = await this.redisService.get(`game:room:${roomId}`);
+    return data ? (JSON.parse(data) as GameRoom) : null;
+  }
+
+  async setRoomWithTTL(room: GameRoom): Promise<void> {
+    await this.redisService.set(
+      `game:room:${room.id}`,
+      JSON.stringify(room),
+      7200, // 2시간 TTL (#23)
+    );
+  }
+
+  // ─── #63 Lobby helpers ────────────────────────────────────────────────────
+
+  /**
+   * Host leaves → delete room. Guest leaves → remove guest from room.
+   */
+  async leaveRoom(roomId: string, userId: string): Promise<void> {
+    const roomKey = `game:room:${roomId}`;
+    const data = await this.redisService.get(roomKey);
+    if (!data) return;
+
+    const room = JSON.parse(data) as GameRoom & { hostReady?: boolean; guestReady?: boolean; createdAt?: string };
+
+    if (room.host.userId === userId) {
+      await this.redisService.getClient().del(roomKey);
+      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+    } else if (room.guest?.userId === userId) {
+      room.guest = undefined;
+      room.guestReady = false;
+      await this.redisService.set(roomKey, JSON.stringify(room), 7200);
+      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+    }
+  }
+
+  /**
+   * Toggle ready flag for host or guest. Both ready → status stays WAITING until game gateway starts.
+   */
+  async setReady(
+    roomId: string,
+    userId: string,
+    ready: boolean,
+  ): Promise<GameRoom & { hostReady: boolean; guestReady: boolean; createdAt: string }> {
+    const roomKey = `game:room:${roomId}`;
+    const data = await this.redisService.get(roomKey);
+    if (!data) throw new NotFoundException('Game room not found');
+
+    const room = JSON.parse(data) as GameRoom & { hostReady?: boolean; guestReady?: boolean; createdAt?: string };
+
+    if (room.host.userId === userId) {
+      room.hostReady = ready;
+    } else if (room.guest?.userId === userId) {
+      room.guestReady = ready;
+    } else {
+      throw new BadRequestException('User is not in this room');
+    }
+
+    await this.redisService.set(roomKey, JSON.stringify(room), 7200);
+    return room as GameRoom & { hostReady: boolean; guestReady: boolean; createdAt: string };
+  }
 }
