@@ -64,7 +64,10 @@ export class GameService {
       distance: 3,
       currentTurn: 1,
       statusEffects: { host: [], guest: [] },
-    };
+      createdAt: new Date().toISOString(),
+      hostReady: false,
+      guestReady: false,
+    } as any;
 
     await this.redisService.set(roomKey, JSON.stringify(room), 7200);
     return room;
@@ -684,5 +687,54 @@ export class GameService {
       JSON.stringify(room),
       7200, // 2시간 TTL (#23)
     );
+  }
+
+  // ─── #63 Lobby helpers ────────────────────────────────────────────────────
+
+  /**
+   * Host leaves → delete room. Guest leaves → remove guest from room.
+   */
+  async leaveRoom(roomId: string, userId: string): Promise<void> {
+    const roomKey = `game:room:${roomId}`;
+    const data = await this.redisService.get(roomKey);
+    if (!data) return;
+
+    const room = JSON.parse(data) as GameRoom & { hostReady?: boolean; guestReady?: boolean; createdAt?: string };
+
+    if (room.host.userId === userId) {
+      await this.redisService.getClient().del(roomKey);
+      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+    } else if (room.guest?.userId === userId) {
+      room.guest = undefined;
+      room.guestReady = false;
+      await this.redisService.set(roomKey, JSON.stringify(room), 7200);
+      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+    }
+  }
+
+  /**
+   * Toggle ready flag for host or guest. Both ready → status stays WAITING until game gateway starts.
+   */
+  async setReady(
+    roomId: string,
+    userId: string,
+    ready: boolean,
+  ): Promise<GameRoom & { hostReady: boolean; guestReady: boolean; createdAt: string }> {
+    const roomKey = `game:room:${roomId}`;
+    const data = await this.redisService.get(roomKey);
+    if (!data) throw new NotFoundException('Game room not found');
+
+    const room = JSON.parse(data) as GameRoom & { hostReady?: boolean; guestReady?: boolean; createdAt?: string };
+
+    if (room.host.userId === userId) {
+      room.hostReady = ready;
+    } else if (room.guest?.userId === userId) {
+      room.guestReady = ready;
+    } else {
+      throw new BadRequestException('User is not in this room');
+    }
+
+    await this.redisService.set(roomKey, JSON.stringify(room), 7200);
+    return room as GameRoom & { hostReady: boolean; guestReady: boolean; createdAt: string };
   }
 }
