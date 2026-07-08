@@ -13,7 +13,7 @@ import { CreateRoomDto, JoinRoomDto, SubmitCardsDto } from './dto/game.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { User } from '../user/entities/user.entity';
 
-@Controller('game')
+@Controller('api/game')
 @UseGuards(JwtAuthGuard)
 export class GameController {
   constructor(private readonly gameService: GameService) {}
@@ -111,6 +111,12 @@ export class GameController {
   @Get('leaderboard')
   async getLeaderboard() {
     const data = await this.gameService.getLeaderboard();
+    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
+  }
+
+  @Get('cards')
+  async getAllCards() {
+    const data = await this.gameService.getAllCards();
     return { timestamp: new Date().toISOString(), status: 200, data, error: null };
   }
 }

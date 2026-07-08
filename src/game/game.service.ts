@@ -626,6 +626,10 @@ export class GameService {
     await this.redisService.del(roomKey);
   }
 
+  async getAllCards(): Promise<Card[]> {
+    return this.cardRepository.find({ order: { id: 'ASC' } });
+  }
+
   // ─── #21 Stats & Leaderboard ────────────────────────────────────────────
 
   async getUserStats(userId: string) {
