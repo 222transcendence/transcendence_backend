@@ -31,9 +31,10 @@ export class ChatService {
 
   async getHistory() {
     const messages = await this.chatMessageRepository.find({
-      order: { createdAt: 'ASC' },
+      order: { createdAt: 'DESC' },
       take: HISTORY_LIMIT,
     });
+    messages.reverse(); // 최신 50개를 오름차순으로 정렬
 
     return messages.map((msg) => ({
       id: msg.id,
