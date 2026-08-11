@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
 import { MatchHistory } from '../entities/match-history.entity';
-import { User } from '../../user/entities/user.entity';
+import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   AcidRainSession,
   ActiveWord,
@@ -70,6 +70,12 @@ export class AcidRainService {
     };
     this.sessions.set(roomId, session);
     await this.persistSession(session);
+
+    // 두 플레이어 상태 IN_GAME으로 전환
+    await this.userRepo.update(
+      [host.userId, guest.userId],
+      { status: UserStatus.IN_GAME },
+    );
 
     // 3초 카운트다운 후 IN_PROGRESS
     const startAt = new Date(Date.now() + 3000).toISOString();
@@ -327,6 +333,12 @@ export class AcidRainService {
 
     this.sessions.delete(roomId);
     await this.redisService.del(`game:acidroom:${roomId}`);
+
+    // 두 플레이어 상태 ONLINE으로 복원
+    await this.userRepo.update(
+      [session.host.userId, session.guest.userId],
+      { status: UserStatus.ONLINE },
+    );
 
     await this.saveMatchHistory(session, winnerId, reason);
     this.logger.log(`Match ${roomId} ended — reason: ${reason}, winner: ${winnerId}`);
