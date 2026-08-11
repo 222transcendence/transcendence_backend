@@ -184,6 +184,19 @@ export class FriendService {
     }));
   }
 
+  async getSentRequests(
+    currentUserId: string,
+  ): Promise<{ id: string; receiver: SafeUser; createdAt: Date }[]> {
+    const requests = await this.friendRepository.find({
+      where: { requester: { id: currentUserId }, status: FriendStatus.PENDING },
+    });
+    return requests.map((r) => ({
+      id: r.id,
+      receiver: sanitizeUser(r.receiver),
+      createdAt: r.createdAt,
+    }));
+  }
+
   private async findRelationBetweenUsers(
     currentUserId: string,
     targetUserId: string,

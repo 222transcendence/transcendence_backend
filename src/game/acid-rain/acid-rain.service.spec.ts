@@ -4,6 +4,7 @@ import { Server, Socket } from 'socket.io';
 import { AcidRainService } from './acid-rain.service';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
+import { ChatGateway } from '../../chat/chat.gateway';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import { HpPair, WordSpawnPayload } from './acid-rain.interface';
@@ -76,6 +77,11 @@ describe('AcidRainService', () => {
     broadcast: jest.fn(),
   };
 
+  const mockChatGateway = {
+    setUserStatus: jest.fn().mockResolvedValue(undefined),
+    notifyFriends: jest.fn().mockResolvedValue(undefined),
+  };
+
   const mockRedisService = {
     set: jest.fn().mockImplementation((key: string, value: string) => {
       redisStore[key] = value;
@@ -121,6 +127,7 @@ describe('AcidRainService', () => {
         { provide: getRepositoryToken(User), useValue: mockUserRepository },
         { provide: RedisService, useValue: mockRedisService },
         { provide: LobbyService, useValue: mockLobbyService },
+        { provide: ChatGateway, useValue: mockChatGateway },
       ],
     }).compile();
 
