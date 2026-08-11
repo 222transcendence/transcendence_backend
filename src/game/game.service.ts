@@ -186,7 +186,18 @@ export class GameService {
       skip: (page - 1) * limit,
       take: limit,
     });
-    return { matches, total, page, limit };
+    const safeUser = (u: User | null) =>
+      u ? { id: u.id, nickname: u.nickname, avatar: u.avatar } : null;
+    const mapped = matches.map((m) => ({
+      id: m.id,
+      hostUser: safeUser(m.hostUser),
+      guestUser: safeUser(m.guestUser),
+      winner: safeUser(m.winner),
+      roundsPlayed: m.roundsPlayed,
+      matchData: m.matchData,
+      createdAt: m.createdAt,
+    }));
+    return { matches: mapped, total, page, limit };
   }
 
   async getLeaderboard() {
