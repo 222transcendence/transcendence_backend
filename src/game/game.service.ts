@@ -9,7 +9,6 @@ import { RedisService } from '../redis/redis.service';
 import { User, UserStatus } from '../user/entities/user.entity';
 import { MatchHistory } from './entities/match-history.entity';
 import { GameRoom, RoomStatus } from './game.interface';
-import { MatchMode } from './entities/match-history.entity';
 import { randomUUID } from 'crypto';
 
 @Injectable()
@@ -120,36 +119,23 @@ export class GameService {
   }
 
   /**
-   * Host leaves → if guest exists, promote guest to new host; otherwise delete room.
-   * Guest leaves → remove guest from room.
-   * Returns updated room if still alive, null if deleted.
+   * Host leaves → delete room. Guest leaves → remove guest from room.
    */
-  async leaveRoom(roomId: string, userId: string): Promise<GameRoom | null> {
+  async leaveRoom(roomId: string, userId: string): Promise<void> {
     const roomKey = `game:room:${roomId}`;
     const data = await this.redisService.get(roomKey);
-    if (!data) return null;
+    if (!data) return;
 
     const room = JSON.parse(data) as GameRoom;
 
     if (room.host.userId === userId) {
-      if (room.guest) {
-        room.host = { ...room.guest, ready: false };
-        room.guest = undefined;
-        await this.redisService.set(roomKey, JSON.stringify(room), 7200);
-        await this.userRepository.update(userId, { status: UserStatus.ONLINE });
-        return room;
-      } else {
-        await this.redisService.getClient().del(roomKey);
-        await this.userRepository.update(userId, { status: UserStatus.ONLINE });
-        return null;
-      }
+      await this.redisService.getClient().del(roomKey);
+      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
     } else if (room.guest?.userId === userId) {
       room.guest = undefined;
       await this.redisService.set(roomKey, JSON.stringify(room), 7200);
       await this.userRepository.update(userId, { status: UserStatus.ONLINE });
-      return room;
     }
-    return room;
   }
 
   /**
@@ -193,34 +179,14 @@ export class GameService {
     };
   }
 
-  async getUserMatches(userId: string, page: number, limit: number, mode?: MatchMode) {
-    const baseWhere = mode
-      ? [
-          { hostUser: { id: userId }, mode },
-          { guestUser: { id: userId }, mode },
-        ]
-      : [
-          { hostUser: { id: userId } },
-          { guestUser: { id: userId } },
-        ];
+  async getUserMatches(userId: string, page: number, limit: number) {
     const [matches, total] = await this.matchHistoryRepository.findAndCount({
-      where: baseWhere,
+      where: [{ hostUser: { id: userId } }, { guestUser: { id: userId } }],
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
     });
-    const safeUser = (u: User | null) =>
-      u ? { id: u.id, nickname: u.nickname, avatar: u.avatar } : null;
-    const mapped = matches.map((m) => ({
-      id: m.id,
-      hostUser: safeUser(m.hostUser),
-      guestUser: safeUser(m.guestUser),
-      winner: safeUser(m.winner),
-      roundsPlayed: m.roundsPlayed,
-      matchData: m.matchData,
-      createdAt: m.createdAt,
-    }));
-    return { matches: mapped, total, page, limit };
+    return { matches, total, page, limit };
   }
 
   async getLeaderboard() {

@@ -20,6 +20,6 @@ import { FriendModule } from '../friend/friend.module';
   ],
   providers: [ChatGateway, ChatService],
   controllers: [ChatController],
-  exports: [ChatService, ChatGateway],
+  exports: [ChatService],
 })
 export class ChatModule {}

@@ -5,8 +5,7 @@ import { Server } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
-import { ChatGateway } from '../../chat/chat.gateway';
-import { MatchHistory, MatchMode } from '../entities/match-history.entity';
+import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   AcidRainSession,
@@ -16,7 +15,7 @@ import {
   PlayerPublic,
   WordSpawnPayload,
 } from './acid-rain.interface';
-import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
+import { pickWord } from './word-picker';
 
 const INITIAL_HP = 100;
 const MATCH_DURATION_MS = 180_000;
@@ -35,8 +34,6 @@ export class AcidRainService implements OnModuleInit {
   constructor(
     private readonly redisService: RedisService,
     private readonly lobbyService: LobbyService,
-    private readonly chatGateway: ChatGateway,
-    private readonly wordDictionaryService: WordDictionaryService,
     @InjectRepository(MatchHistory)
     private readonly matchHistoryRepo: Repository<MatchHistory>,
     @InjectRepository(User)
@@ -89,19 +86,11 @@ export class AcidRainService implements OnModuleInit {
     this.sessions.set(roomId, session);
     await this.persistSession(session);
 
-    // 두 플레이어 상태 IN_GAME으로 전환 (DB + Redis + 친구 실시간 알림)
+    // 두 플레이어 상태 IN_GAME으로 전환
     await this.userRepo.update(
       [host.userId, guest.userId],
       { status: UserStatus.IN_GAME },
     );
-    await Promise.all([
-      this.chatGateway.setUserStatus(host.userId, 'IN_GAME'),
-      this.chatGateway.setUserStatus(guest.userId, 'IN_GAME'),
-    ]);
-    await Promise.all([
-      this.chatGateway.notifyFriends(host.userId, 'IN_GAME'),
-      this.chatGateway.notifyFriends(guest.userId, 'IN_GAME'),
-    ]);
 
     // 3초 카운트다운 후 IN_PROGRESS
     const startAt = new Date(Date.now() + 3000).toISOString();
@@ -129,7 +118,7 @@ export class AcidRainService implements OnModuleInit {
     const tick = () => {
       if (session.status !== 'IN_PROGRESS') return;
       const elapsed = (Date.now() - session.startedAt) / 1000;
-      const word = this.wordDictionaryService.pickWord(elapsed);
+      const word = pickWord(elapsed);
       const wordId = `w_${randomUUID().slice(0, 8)}`;
       const lane = this.assignLane(session);
       const fallDurationMs = Math.round(
@@ -365,19 +354,11 @@ export class AcidRainService implements OnModuleInit {
     await this.redisService.getClient().del(`game:room:${roomId}`);
     this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
 
-    // 두 플레이어 상태 ONLINE으로 복원 (DB + Redis + 친구 실시간 알림)
+    // 두 플레이어 상태 ONLINE으로 복원
     await this.userRepo.update(
       [session.host.userId, session.guest.userId],
       { status: UserStatus.ONLINE },
     );
-    await Promise.all([
-      this.chatGateway.setUserStatus(session.host.userId, 'ONLINE'),
-      this.chatGateway.setUserStatus(session.guest.userId, 'ONLINE'),
-    ]);
-    await Promise.all([
-      this.chatGateway.notifyFriends(session.host.userId, 'ONLINE'),
-      this.chatGateway.notifyFriends(session.guest.userId, 'ONLINE'),
-    ]);
 
     await this.saveMatchHistory(session, winnerId, reason);
     this.logger.log(`Match ${roomId} ended — reason: ${reason}, winner: ${winnerId}`);
@@ -410,7 +391,6 @@ export class AcidRainService implements OnModuleInit {
     session: AcidRainSession,
     winnerId: string | null,
     reason: MatchEndReason,
-    mode: MatchMode = MatchMode.PVP,
   ): Promise<void> {
     try {
       const [hostUser, guestUser] = await Promise.all([
@@ -428,7 +408,6 @@ export class AcidRainService implements OnModuleInit {
         hostUser,
         guestUser,
         winner: winnerUser,
-        mode,
         roundsPlayed: 1,
         matchData: {
           finalHp: session.hp,
@@ -439,9 +418,7 @@ export class AcidRainService implements OnModuleInit {
       });
       await this.matchHistoryRepo.save(history);
 
-      // PVP만 wins/losses에 반영 — AI 연습은 랭킹에 영향 없음 (#104)
-      if (mode !== MatchMode.PVP) return;
-
+      // wins/losses 업데이트
       if (winnerId) {
         const loserId = winnerId === session.host.userId ? session.guest.userId : session.host.userId;
         await Promise.all([

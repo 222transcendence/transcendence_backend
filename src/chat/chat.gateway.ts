@@ -152,7 +152,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  async notifyFriends(userId: string, status: OnlineStatus) {
+  private async notifyFriends(userId: string, status: OnlineStatus) {
     try {
       const friends = await this.friendService.getFriends(userId);
       const payload = { userId, status };
