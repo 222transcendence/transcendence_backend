@@ -2,7 +2,6 @@ import { Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { UserModule } from '../user/user.module';
 import { GameModule } from './game.module';
-import { LobbyModule } from '../lobby/lobby.module';
 import { AcidRainGateway } from './acid-rain/acid-rain.gateway';
 import { AcidRainService } from './acid-rain/acid-rain.service';
 
@@ -14,7 +13,6 @@ import { AcidRainService } from './acid-rain/acid-rain.service';
     }),
     UserModule,
     GameModule,
-    LobbyModule,
   ],
   providers: [AcidRainGateway, AcidRainService],
 })

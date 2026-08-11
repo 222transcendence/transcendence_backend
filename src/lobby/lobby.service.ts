@@ -5,7 +5,6 @@ export interface LobbyClient {
   ws: WebSocket;
   userId: string;
   nickname: string;
-  roomId?: string;
 }
 
 @Injectable()
@@ -30,12 +29,6 @@ export class LobbyService {
       if (c.userId === userId) return c;
     }
     return undefined;
-  }
-
-  clearRoomForAllClients(roomId: string): void {
-    for (const c of this.clients) {
-      if (c.roomId === roomId) c.roomId = undefined;
-    }
   }
 
   broadcast(type: string, payload: unknown): void {

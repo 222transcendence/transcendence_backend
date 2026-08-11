@@ -4,7 +4,6 @@ import { Repository } from 'typeorm';
 import { Server } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
-import { LobbyService } from '../../lobby/lobby.service';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
@@ -33,7 +32,6 @@ export class AcidRainService implements OnModuleInit {
 
   constructor(
     private readonly redisService: RedisService,
-    private readonly lobbyService: LobbyService,
     @InjectRepository(MatchHistory)
     private readonly matchHistoryRepo: Repository<MatchHistory>,
     @InjectRepository(User)
@@ -351,8 +349,6 @@ export class AcidRainService implements OnModuleInit {
 
     this.sessions.delete(roomId);
     await this.redisService.del(`game:acidroom:${roomId}`);
-    await this.redisService.getClient().del(`game:room:${roomId}`);
-    this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
 
     // 두 플레이어 상태 ONLINE으로 복원
     await this.userRepo.update(
