@@ -10,5 +10,7 @@ WORKDIR /app
 COPY package*.json ./
 RUN npm install --only=production
 COPY --from=builder /app/dist ./dist
+COPY docker-entrypoint.sh ./
+RUN chmod +x docker-entrypoint.sh
 EXPOSE 3000
-CMD ["node", "dist/main.js"]
+ENTRYPOINT ["./docker-entrypoint.sh"]
