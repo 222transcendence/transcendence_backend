@@ -337,11 +337,14 @@ export class AcidRainService implements OnModuleInit {
     }
 
     const finalHp: HpPair = { ...session.hp };
+    const durationSec = Math.round((Date.now() - session.startedAt) / 1000);
     server.to(`game:${roomId}`).emit('match_end', {
       roomId,
       winnerId,
       reason,
       finalHp,
+      wordsTyped: { ...session.wordsTyped },
+      durationSec,
     });
 
     this.sessions.delete(roomId);
