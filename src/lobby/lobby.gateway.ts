@@ -39,10 +39,17 @@ function toLobbyRoom(room: GameRoom): LobbyRoom {
   };
 }
 
+const ROOM_LEAVE_GRACE_MS = 3000;
+
 @Injectable()
 export class LobbyGateway implements OnModuleInit {
   private readonly logger = new Logger(LobbyGateway.name);
   private wss!: WebSocketServer;
+  // userId → 방 이탈 유예 타이머. 로비→대기실 화면 전환처럼 소켓을 새로
+  // 맺는 정상적인 재연결에서 방이 조용히 삭제되는 것을 막기 위함
+  // (WEBSOCKET_PROTOCOL.md §0: 방 소속은 연결 인스턴스가 아니라 인증된
+  // 사용자 기준으로 유지되어야 함).
+  private readonly roomLeaveTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(
     private readonly jwtService: JwtService,
@@ -108,6 +115,13 @@ export class LobbyGateway implements OnModuleInit {
     this.lobbyService.addClient(client);
     websocketConnections.inc({ namespace: 'lobby' });
 
+    // 유예 시간 내 재연결 — 예정된 방 이탈 취소 (페이지 전환 등 정상적인 재연결)
+    const pendingLeave = this.roomLeaveTimers.get(userId);
+    if (pendingLeave) {
+      clearTimeout(pendingLeave);
+      this.roomLeaveTimers.delete(userId);
+    }
+
     ws.on('message', (data) => {
       try {
         const msg = JSON.parse(data.toString()) as {
@@ -131,16 +145,24 @@ export class LobbyGateway implements OnModuleInit {
       websocketConnections.dec({ namespace: 'lobby' });
       if (client.roomId) {
         const roomId = client.roomId;
-        this.gameService.leaveRoom(roomId, client.userId)
-          .then((updatedRoom) => {
-            if (updatedRoom) {
-              this.lobbyService.broadcast('ROOM_UPDATED', { room: toLobbyRoom(updatedRoom) });
-            } else {
-              this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
-            }
-            return this.broadcastRoomList();
-          })
-          .catch((err) => this.logger.error(`Disconnect room cleanup failed: ${String(err)}`));
+        const userId = client.userId;
+        // 즉시 방을 나가지 않고 짧은 유예를 둔다 — 로비→대기실 화면 전환처럼
+        // 같은 유저가 새 소켓으로 바로 재연결하는 정상적인 흐름에서 방이
+        // 삭제되는 것을 방지. 유예 내 재연결이 없으면 실제 이탈로 간주.
+        const timer = setTimeout(() => {
+          this.roomLeaveTimers.delete(userId);
+          this.gameService.leaveRoom(roomId, userId)
+            .then((updatedRoom) => {
+              if (updatedRoom) {
+                this.lobbyService.broadcast('ROOM_UPDATED', { room: toLobbyRoom(updatedRoom) });
+              } else {
+                this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
+              }
+              return this.broadcastRoomList();
+            })
+            .catch((err) => this.logger.error(`Disconnect room cleanup failed: ${String(err)}`));
+        }, ROOM_LEAVE_GRACE_MS);
+        this.roomLeaveTimers.set(userId, timer);
       }
     });
 
