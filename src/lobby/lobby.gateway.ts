@@ -141,6 +141,11 @@ export class LobbyGateway implements OnModuleInit {
 
     ws.on('close', () => {
       this.lobbyService.removeClient(client);
+      if (client.roomId) {
+        this.gameService.leaveRoom(client.roomId, client.userId)
+          .then(() => this.broadcastRoomList())
+          .catch((err) => this.logger.error(`Disconnect room cleanup failed: ${String(err)}`));
+      }
     });
 
     ws.on('error', (err) => {
@@ -168,6 +173,7 @@ export class LobbyGateway implements OnModuleInit {
           client.userId,
           client.nickname,
         );
+        client.roomId = room.id;
         const lobbyRoom = toLobbyRoom(room);
         await this.broadcastRoomList();
         this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: lobbyRoom });
@@ -181,6 +187,7 @@ export class LobbyGateway implements OnModuleInit {
           client.userId,
           client.nickname,
         );
+        client.roomId = room.id;
         const lobbyRoom = toLobbyRoom(room);
         await this.broadcastRoomList();
         this.lobbyService.broadcast('ROOM_UPDATED', { room: lobbyRoom });
@@ -205,6 +212,7 @@ export class LobbyGateway implements OnModuleInit {
       case 'LEAVE_ROOM': {
         const { roomId } = payload as { roomId: string };
         await this.gameService.leaveRoom(roomId, client.userId);
+        client.roomId = undefined;
         await this.broadcastRoomList();
         break;
       }

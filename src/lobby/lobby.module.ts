@@ -14,6 +14,6 @@ import { UserModule } from '../user/user.module';
     }),
   ],
   providers: [LobbyGateway, LobbyService],
-  exports: [LobbyGateway],
+  exports: [LobbyGateway, LobbyService],
 })
 export class LobbyModule {}
