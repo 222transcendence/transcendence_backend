@@ -8,6 +8,7 @@ import { LobbyService, LobbyClient } from './lobby.service';
 import { GameService } from '../game/game.service';
 import { GameRoom, RoomStatus } from '../game/game.interface';
 import { UserService } from '../user/user.service';
+import { websocketConnections } from '../metrics/metrics.registry';
 
 interface LobbyRoom {
   id: string;
@@ -118,6 +119,7 @@ export class LobbyGateway implements OnModuleInit {
   private onConnection(ws: WebSocket, userId: string, nickname: string): void {
     const client: LobbyClient = { ws, userId, nickname };
     this.lobbyService.addClient(client);
+    websocketConnections.inc({ namespace: 'lobby' });
 
     ws.on('message', (data) => {
       try {
@@ -141,6 +143,7 @@ export class LobbyGateway implements OnModuleInit {
 
     ws.on('close', () => {
       this.lobbyService.removeClient(client);
+      websocketConnections.dec({ namespace: 'lobby' });
       if (client.roomId) {
         this.gameService.leaveRoom(client.roomId, client.userId)
           .then(() => this.broadcastRoomList())

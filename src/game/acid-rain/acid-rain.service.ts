@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
+import { activeGames } from '../../metrics/metrics.registry';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
@@ -84,6 +85,7 @@ export class AcidRainService implements OnModuleInit {
       status: 'COUNTDOWN',
     };
     this.sessions.set(roomId, session);
+    activeGames.set(this.sessions.size);
     await this.persistSession(session);
 
     // 두 플레이어 상태 IN_GAME으로 전환
@@ -350,6 +352,7 @@ export class AcidRainService implements OnModuleInit {
     });
 
     this.sessions.delete(roomId);
+    activeGames.set(this.sessions.size);
     await this.redisService.del(`game:acidroom:${roomId}`);
     await this.redisService.getClient().del(`game:room:${roomId}`);
     this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
