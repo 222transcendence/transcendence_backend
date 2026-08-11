@@ -8,6 +8,7 @@ const mockRepo = () => ({
   create: jest.fn(),
   save: jest.fn(),
   find: jest.fn(),
+  findOneOrFail: jest.fn(),
 });
 
 describe('ChatService', () => {
@@ -45,6 +46,7 @@ describe('ChatService', () => {
 
       repo.create.mockReturnValue(msg);
       repo.save.mockResolvedValue(msg);
+      repo.findOneOrFail.mockResolvedValue(msg);
 
       const result = await service.saveMessage('user-1', 'hello');
       expect(repo.create).toHaveBeenCalledWith({
@@ -54,6 +56,9 @@ describe('ChatService', () => {
         type: MessageType.NORMAL,
       });
       expect(repo.save).toHaveBeenCalledWith(msg);
+      expect(repo.findOneOrFail).toHaveBeenCalledWith({
+        where: { id: msg.id },
+      });
       expect(result).toBe(msg);
     });
 
@@ -69,6 +74,7 @@ describe('ChatService', () => {
 
       repo.create.mockReturnValue(msg);
       repo.save.mockResolvedValue(msg);
+      repo.findOneOrFail.mockResolvedValue(msg);
 
       const result = await service.saveMessage(
         'user-1',
@@ -88,15 +94,35 @@ describe('ChatService', () => {
 
   describe('getHistory', () => {
     it('should return up to 50 messages with sanitized sender fields', async () => {
-      const sender = { id: 'user-1', nickname: 'Alice', avatar: 'avatar.png', password: 'secret', email: 'a@b.com' };
+      const sender = {
+        id: 'user-1',
+        nickname: 'Alice',
+        avatar: 'avatar.png',
+        password: 'secret',
+        email: 'a@b.com',
+      };
       const msgs = [
-        { id: 'uuid-1', content: 'hi', roomId: null, type: MessageType.NORMAL, createdAt: new Date(), sender },
+        {
+          id: 'uuid-1',
+          content: 'hi',
+          roomId: null,
+          type: MessageType.NORMAL,
+          createdAt: new Date(),
+          sender,
+        },
       ] as unknown as ChatMessage[];
       repo.find.mockResolvedValue(msgs);
 
       const result = await service.getHistory();
-      expect(repo.find).toHaveBeenCalledWith({ order: { createdAt: 'ASC' }, take: 50 });
-      expect(result[0].sender).toEqual({ id: 'user-1', nickname: 'Alice', avatar: 'avatar.png' });
+      expect(repo.find).toHaveBeenCalledWith({
+        order: { createdAt: 'DESC' },
+        take: 50,
+      });
+      expect(result[0].sender).toEqual({
+        id: 'user-1',
+        nickname: 'Alice',
+        avatar: 'avatar.png',
+      });
       expect((result[0].sender as any).password).toBeUndefined();
       expect((result[0].sender as any).email).toBeUndefined();
     });

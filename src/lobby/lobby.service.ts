@@ -14,7 +14,9 @@ export class LobbyService {
 
   addClient(client: LobbyClient): void {
     this.clients.add(client);
-    this.logger.log(`Lobby client connected: ${client.nickname} (${client.userId})`);
+    this.logger.log(
+      `Lobby client connected: ${client.nickname} (${client.userId})`,
+    );
   }
 
   removeClient(client: LobbyClient): void {

@@ -1,97 +1,25 @@
-import {
-  Controller,
-  Get,
-  Post,
-  Body,
-  Param,
-  Query,
-  UseGuards,
-  Req,
-} from '@nestjs/common';
+import { Controller, Get, Param, Query, UseGuards } from '@nestjs/common';
 import { GameService } from './game.service';
-import { CreateRoomDto, JoinRoomDto, SubmitCardsDto } from './dto/game.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { User } from '../user/entities/user.entity';
 
+// 구 REST 방 엔드포인트(POST rooms 등)는 로비 WebSocket(/ws/lobby)으로 완전히 대체되어
+// 제거됨 — 실사용처 없음 확인됨 (WEBSOCKET_PROTOCOL.md §6.5, #78).
 @Controller('game')
 @UseGuards(JwtAuthGuard)
 export class GameController {
   constructor(private readonly gameService: GameService) {}
-
-  @Post('rooms')
-  async createRoom(@Req() req: any, @Body() dto: CreateRoomDto) {
-    const user = (req as { user: User }).user;
-    const room = await this.gameService.createRoom(
-      user.id,
-      user.nickname,
-      dto.characterId,
-    );
-    return {
-      timestamp: new Date().toISOString(),
-      status: 201,
-      data: room,
-      error: null,
-    };
-  }
-
-  @Post('rooms/:id/join')
-  async joinRoom(
-    @Req() req: any,
-    @Param('id') roomId: string,
-    @Body() dto: JoinRoomDto,
-  ) {
-    const user = (req as { user: User }).user;
-    const room = await this.gameService.joinRoom(
-      roomId,
-      user.id,
-      user.nickname,
-      dto.characterId,
-    );
-    return {
-      timestamp: new Date().toISOString(),
-      status: 200,
-      data: room,
-      error: null,
-    };
-  }
-
-  @Get('rooms')
-  async getWaitingRooms() {
-    const rooms = await this.gameService.getWaitingRooms();
-    return {
-      timestamp: new Date().toISOString(),
-      status: 200,
-      data: rooms,
-      error: null,
-    };
-  }
-
-  @Post('rooms/:id/submit')
-  async submitCards(
-    @Req() req: any,
-    @Param('id') roomId: string,
-    @Body() dto: SubmitCardsDto,
-  ) {
-    const user = (req as { user: User }).user;
-    const room = await this.gameService.submitCards(
-      roomId,
-      user.id,
-      dto.cardIds,
-    );
-    return {
-      timestamp: new Date().toISOString(),
-      status: 200,
-      data: room,
-      error: null,
-    };
-  }
 
   // ─── #21 Stats & Leaderboard ────────────────────────────────────────────
 
   @Get('users/:id/stats')
   async getUserStats(@Param('id') userId: string) {
     const data = await this.gameService.getUserStats(userId);
-    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
+    return {
+      timestamp: new Date().toISOString(),
+      status: 200,
+      data,
+      error: null,
+    };
   }
 
   @Get('users/:id/matches')
@@ -105,12 +33,22 @@ export class GameController {
       Math.max(1, parseInt(page)),
       Math.min(50, parseInt(limit)),
     );
-    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
+    return {
+      timestamp: new Date().toISOString(),
+      status: 200,
+      data,
+      error: null,
+    };
   }
 
   @Get('leaderboard')
   async getLeaderboard() {
     const data = await this.gameService.getLeaderboard();
-    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
+    return {
+      timestamp: new Date().toISOString(),
+      status: 200,
+      data,
+      error: null,
+    };
   }
 }
