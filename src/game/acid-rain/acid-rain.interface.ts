@@ -1,4 +1,17 @@
 export type MatchEndReason = 'KO' | 'TIME_LIMIT' | 'FORFEIT';
+export type WordResolutionState = 'ACTIVE' | 'CLEARED' | 'MISSED';
+export type SubmitRejectedReason =
+  | 'ALREADY_CLEARED'
+  | 'NOT_FOUND'
+  | 'WRONG_TEXT';
+export type JudgeRejectionReason =
+  | 'ROOM_NOT_FOUND'
+  | 'PLAYER_NOT_FOUND'
+  | 'WORD_NOT_FOUND'
+  | 'WORD_ALREADY_RESOLVED'
+  | 'DUPLICATE_ATTEMPT'
+  | 'INCORRECT_TEXT'
+  | 'GAME_NOT_ACTIVE';
 
 export interface PlayerPublic {
   userId: string;
@@ -28,12 +41,14 @@ export interface AcidRainSession {
   wordsTyped: { host: number; guest: number };
   activeWords: Map<string, ActiveWord>;
   startedAt: number; // Date.now()
-  spawnLoopTimer: ReturnType<typeof setInterval> | null;
+  countdownTimer: ReturnType<typeof setTimeout> | null;
+  spawnLoopTimer: ReturnType<typeof setTimeout> | null;
   missLoopTimer: ReturnType<typeof setInterval> | null;
+  matchEndTimer: ReturnType<typeof setTimeout> | null;
   /** 현재 낙하 중인 단어별 레인 점유 현황 */
   occupiedLanes: Set<number>;
-  /** wordId → cleared userId, 멱등 처리용 */
-  clearedWords: Map<string, string>;
+  /** wordId → 최종 단어 상태, ACTIVE가 아닌 단어의 재판정 방지용 */
+  resolvedWords: Map<string, ResolvedWord>;
   status: 'COUNTDOWN' | 'IN_PROGRESS' | 'FINISHED';
 }
 
@@ -55,4 +70,70 @@ export interface WordSubmitPayload {
   wordId: string;
   text: string;
   clientTs: number;
+  attemptId?: string;
 }
+
+export interface JudgeWordSubmitInput {
+  roomId: string;
+  playerId: string;
+  wordId: string;
+  text: string;
+  attemptId?: string;
+}
+
+export interface WordClearedEventPayload {
+  wordId: string;
+  clearedBy: string;
+  damage: number;
+  targetHp: HpPair;
+}
+
+export interface SubmitRejectedEventPayload {
+  wordId: string;
+  reason: SubmitRejectedReason;
+}
+
+export interface ResolvedWord {
+  state: Exclude<WordResolutionState, 'ACTIVE'>;
+  playerId?: string;
+  attemptId?: string;
+}
+
+export interface JudgeWordSubmitAccepted {
+  accepted: true;
+  roomId: string;
+  playerId: string;
+  wordId: string;
+  attemptId?: string;
+  wordStateBefore: 'ACTIVE';
+  wordStateAfter: 'CLEARED';
+  damage: number;
+  targetHp: HpPair;
+  gameEnded: boolean;
+  winnerId: string | null;
+  loserId: string | null;
+  endReason: Extract<MatchEndReason, 'KO'> | null;
+  wordCleared: WordClearedEventPayload;
+}
+
+export interface JudgeWordSubmitRejected {
+  accepted: false;
+  roomId: string;
+  playerId: string;
+  wordId: string;
+  attemptId?: string;
+  reason: JudgeRejectionReason;
+  wordStateBefore?: WordResolutionState;
+  wordStateAfter?: WordResolutionState;
+  damage: 0;
+  targetHp?: HpPair;
+  gameEnded: false;
+  winnerId: null;
+  loserId: null;
+  endReason: null;
+  submitRejected: SubmitRejectedEventPayload;
+}
+
+export type JudgeWordSubmitResult =
+  | JudgeWordSubmitAccepted
+  | JudgeWordSubmitRejected;
