@@ -9,6 +9,7 @@ import { RedisService } from '../redis/redis.service';
 import { User, UserStatus } from '../user/entities/user.entity';
 import { MatchHistory } from './entities/match-history.entity';
 import { GameRoom, RoomStatus } from './game.interface';
+import { MatchMode } from './entities/match-history.entity';
 import { randomUUID } from 'crypto';
 
 @Injectable()
@@ -179,9 +180,18 @@ export class GameService {
     };
   }
 
-  async getUserMatches(userId: string, page: number, limit: number) {
+  async getUserMatches(userId: string, page: number, limit: number, mode?: MatchMode) {
+    const baseWhere = mode
+      ? [
+          { hostUser: { id: userId }, mode },
+          { guestUser: { id: userId }, mode },
+        ]
+      : [
+          { hostUser: { id: userId } },
+          { guestUser: { id: userId } },
+        ];
     const [matches, total] = await this.matchHistoryRepository.findAndCount({
-      where: [{ hostUser: { id: userId } }, { guestUser: { id: userId } }],
+      where: baseWhere,
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,

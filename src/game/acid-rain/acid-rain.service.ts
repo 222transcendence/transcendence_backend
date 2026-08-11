@@ -5,7 +5,7 @@ import { Server } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
-import { MatchHistory } from '../entities/match-history.entity';
+import { MatchHistory, MatchMode } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   AcidRainSession,
@@ -391,6 +391,7 @@ export class AcidRainService implements OnModuleInit {
     session: AcidRainSession,
     winnerId: string | null,
     reason: MatchEndReason,
+    mode: MatchMode = MatchMode.PVP,
   ): Promise<void> {
     try {
       const [hostUser, guestUser] = await Promise.all([
@@ -408,6 +409,7 @@ export class AcidRainService implements OnModuleInit {
         hostUser,
         guestUser,
         winner: winnerUser,
+        mode,
         roundsPlayed: 1,
         matchData: {
           finalHp: session.hp,
@@ -418,7 +420,9 @@ export class AcidRainService implements OnModuleInit {
       });
       await this.matchHistoryRepo.save(history);
 
-      // wins/losses 업데이트
+      // PVP만 wins/losses에 반영 — AI 연습은 랭킹에 영향 없음 (#104)
+      if (mode !== MatchMode.PVP) return;
+
       if (winnerId) {
         const loserId = winnerId === session.host.userId ? session.guest.userId : session.host.userId;
         await Promise.all([
