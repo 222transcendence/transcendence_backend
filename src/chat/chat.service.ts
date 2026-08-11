@@ -24,7 +24,9 @@ export class ChatService {
       roomId,
       type,
     });
-    return await this.chatMessageRepository.save(message);
+    const saved = await this.chatMessageRepository.save(message);
+    // eager 관계가 부분 객체({id})로 채워질 수 있어 재조회
+    return await this.chatMessageRepository.findOneOrFail({ where: { id: saved.id } });
   }
 
   async getHistory() {

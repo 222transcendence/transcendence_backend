@@ -112,7 +112,15 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       createdAt: saved.createdAt,
     };
 
-    this.server.emit('receive_message', payload);
+    if (dto.type === MessageType.INVITE && dto.targetUserId) {
+      // INVITE는 수신자 소켓에만 전달 (발신자 제외)
+      const targetSockets = this.userSockets.get(dto.targetUserId);
+      for (const sid of (targetSockets ?? [])) {
+        this.server.to(sid).emit('receive_message', payload);
+      }
+    } else {
+      this.server.emit('receive_message', payload);
+    }
     return payload;
   }
 

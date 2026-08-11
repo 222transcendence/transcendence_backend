@@ -9,6 +9,7 @@ export class ChatController {
 
   @Get('history')
   async getHistory() {
-    return await this.chatService.getHistory();
+    const data = await this.chatService.getHistory();
+    return { timestamp: new Date().toISOString(), status: 200, data, error: null };
   }
 }

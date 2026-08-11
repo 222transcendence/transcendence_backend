@@ -413,6 +413,21 @@ export class AcidRainService implements OnModuleInit {
         },
       });
       await this.matchHistoryRepo.save(history);
+
+      // wins/losses 업데이트
+      if (winnerId) {
+        const loserId = winnerId === session.host.userId ? session.guest.userId : session.host.userId;
+        await Promise.all([
+          this.userRepo.increment({ id: winnerId }, 'wins', 1),
+          this.userRepo.increment({ id: loserId }, 'losses', 1),
+        ]);
+      } else {
+        // 무승부: 둘 다 losses 증가
+        await Promise.all([
+          this.userRepo.increment({ id: session.host.userId }, 'losses', 1),
+          this.userRepo.increment({ id: session.guest.userId }, 'losses', 1),
+        ]);
+      }
     } catch (err) {
       this.logger.error('Failed to save MatchHistory', err);
     }

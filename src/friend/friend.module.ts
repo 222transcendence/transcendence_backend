@@ -4,9 +4,10 @@ import { Friend } from './entities/friend.entity';
 import { User } from '../user/entities/user.entity';
 import { FriendService } from './friend.service';
 import { FriendController } from './friend.controller';
+import { RedisModule } from '../redis/redis.module';
 
 @Module({
-  imports: [TypeOrmModule.forFeature([Friend, User])],
+  imports: [TypeOrmModule.forFeature([Friend, User]), RedisModule],
   providers: [FriendService],
   controllers: [FriendController],
   exports: [FriendService],
