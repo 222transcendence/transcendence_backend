@@ -14,7 +14,7 @@ import {
   PlayerPublic,
   WordSpawnPayload,
 } from './acid-rain.interface';
-import { pickWord } from './word-bank';
+import { pickWord } from './word-picker';
 
 const INITIAL_HP = 100;
 const MATCH_DURATION_MS = 180_000;
@@ -120,14 +120,14 @@ export class AcidRainService implements OnModuleInit {
       const wordId = `w_${randomUUID().slice(0, 8)}`;
       const lane = this.assignLane(session);
       const fallDurationMs = Math.round(
-        (4000 + 300 * word.text.length) * Math.max(0.6, 1 - elapsed / 300),
+        (4000 + 250 * word.keystrokes) * Math.max(0.6, 1 - elapsed / 300),
       );
       const spawnedAt = new Date().toISOString();
 
       const active: ActiveWord = {
         wordId,
         text: word.text,
-        tier: word.tier,
+        keystrokes: word.keystrokes,
         lane,
         fallDurationMs,
         spawnedAt,
@@ -139,7 +139,7 @@ export class AcidRainService implements OnModuleInit {
       const payload: WordSpawnPayload = {
         wordId,
         text: word.text,
-        tier: word.tier,
+        keystrokes: word.keystrokes,
         lane,
         fallDurationMs,
         spawnedAt,
@@ -240,7 +240,7 @@ export class AcidRainService implements OnModuleInit {
     if (isHost) session.wordsTyped.host++;
     else session.wordsTyped.guest++;
 
-    const damage = 5 + word.text.length;
+    const damage = 5 + Math.ceil(word.keystrokes / 2);
     if (isHost) session.hp.guest = Math.max(0, session.hp.guest - damage);
     else session.hp.host = Math.max(0, session.hp.host - damage);
 
@@ -301,8 +301,8 @@ export class AcidRainService implements OnModuleInit {
       roomId,
       hp: { ...session.hp },
       activeWords: Array.from(session.activeWords.values()).map(
-        ({ wordId, text, tier, lane, fallDurationMs, spawnedAt }) => ({
-          wordId, text, tier, lane, fallDurationMs, spawnedAt,
+        ({ wordId, text, keystrokes, lane, fallDurationMs, spawnedAt }) => ({
+          wordId, text, keystrokes, lane, fallDurationMs, spawnedAt,
         }),
       ),
       elapsedMs: elapsed,

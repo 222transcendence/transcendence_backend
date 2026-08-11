@@ -1,4 +1,3 @@
-export type WordTier = 'easy' | 'medium' | 'hard';
 export type MatchEndReason = 'KO' | 'TIME_LIMIT' | 'FORFEIT';
 
 export interface PlayerPublic {
@@ -14,7 +13,8 @@ export interface HpPair {
 export interface WordSpawnPayload {
   wordId: string;
   text: string;
-  tier: WordTier;
+  /** 2벌식 키보드 기준 실제 타건 횟수 — 낙하 시간·데미지 계산에 쓰이므로 클라이언트도 함께 받는다. */
+  keystrokes: number;
   lane: number;
   fallDurationMs: number;
   spawnedAt: string; // ISO8601
