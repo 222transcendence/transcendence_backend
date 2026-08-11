@@ -17,7 +17,7 @@ import {
   PlayerPublic,
   WordSpawnPayload,
 } from './acid-rain.interface';
-import { pickWord } from './word-picker';
+import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
 
 const INITIAL_HP = 100;
 const MATCH_DURATION_MS = 180_000;
@@ -36,6 +36,7 @@ export class AcidRainService implements OnModuleInit {
   constructor(
     private readonly redisService: RedisService,
     private readonly lobbyService: LobbyService,
+    private readonly wordDictionaryService: WordDictionaryService,
     private readonly chatGateway: ChatGateway,
     @InjectRepository(MatchHistory)
     private readonly matchHistoryRepo: Repository<MatchHistory>,
@@ -130,7 +131,7 @@ export class AcidRainService implements OnModuleInit {
     const tick = () => {
       if (session.status !== 'IN_PROGRESS') return;
       const elapsed = (Date.now() - session.startedAt) / 1000;
-      const word = pickWord(elapsed);
+      const word = this.wordDictionaryService.pickWord(elapsed);
       const wordId = `w_${randomUUID().slice(0, 8)}`;
       const lane = this.assignLane(session);
       const fallDurationMs = Math.round(

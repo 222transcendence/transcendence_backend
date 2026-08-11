@@ -5,6 +5,7 @@ import { AcidRainService } from './acid-rain.service';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
+import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import { HpPair, WordSpawnPayload } from './acid-rain.interface';
@@ -82,6 +83,10 @@ describe('AcidRainService', () => {
     notifyFriends: jest.fn().mockResolvedValue(undefined),
   };
 
+  const mockWordDictionaryService = {
+    pickWord: jest.fn().mockReturnValue({ text: '테스트', keystrokes: 6 }),
+  };
+
   const mockRedisService = {
     set: jest.fn().mockImplementation((key: string, value: string) => {
       redisStore[key] = value;
@@ -128,6 +133,7 @@ describe('AcidRainService', () => {
         { provide: RedisService, useValue: mockRedisService },
         { provide: LobbyService, useValue: mockLobbyService },
         { provide: ChatGateway, useValue: mockChatGateway },
+        { provide: WordDictionaryService, useValue: mockWordDictionaryService },
       ],
     }).compile();
 
