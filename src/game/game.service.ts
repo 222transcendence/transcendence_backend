@@ -9,6 +9,7 @@ import { RedisService } from '../redis/redis.service';
 import { User, UserStatus } from '../user/entities/user.entity';
 import { MatchHistory } from './entities/match-history.entity';
 import { GameRoom, PlayerSession, RoomStatus } from './game.interface';
+import { MatchMode } from './entities/match-history.entity';
 import { randomUUID } from 'crypto';
 
 const ROOM_TTL = 7200;
@@ -161,7 +162,7 @@ export class GameService {
     await this.redisService.set(`game:room:${room.id}`, JSON.stringify(room), ROOM_TTL);
   }
 
-  // ─── Stats & Leaderboard ───────────────────────────────────────────────────
+  // ─── #21 Stats & Leaderboard ────────────────────────────────────────────
 
   async getUserStats(userId: string) {
     const user = await this.userRepository.findOneBy({ id: userId });
@@ -175,9 +176,18 @@ export class GameService {
     };
   }
 
-  async getUserMatches(userId: string, page: number, limit: number) {
+  async getUserMatches(userId: string, page: number, limit: number, mode?: MatchMode) {
+    const baseWhere = mode
+      ? [
+          { hostUser: { id: userId }, mode },
+          { guestUser: { id: userId }, mode },
+        ]
+      : [
+          { hostUser: { id: userId } },
+          { guestUser: { id: userId } },
+        ];
     const [matches, total] = await this.matchHistoryRepository.findAndCount({
-      where: [{ hostUser: { id: userId } }, { guestUser: { id: userId } }],
+      where: baseWhere,
       order: { createdAt: 'DESC' },
       skip: (page - 1) * limit,
       take: limit,
