@@ -3,6 +3,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { UserModule } from '../user/user.module';
 import { GameModule } from './game.module';
 import { GameGateway } from './game.gateway';
+import { AcidRainGateway } from './acid-rain/acid-rain.gateway';
+import { AcidRainService } from './acid-rain/acid-rain.service';
 
 @Module({
   imports: [
@@ -13,6 +15,6 @@ import { GameGateway } from './game.gateway';
     UserModule,
     GameModule,
   ],
-  providers: [GameGateway],
+  providers: [GameGateway, AcidRainGateway, AcidRainService],
 })
 export class GameGatewayModule {}
