@@ -3,6 +3,7 @@ import { getRepositoryToken } from '@nestjs/typeorm';
 import { Server, Socket } from 'socket.io';
 import { AcidRainService } from './acid-rain.service';
 import { RedisService } from '../../redis/redis.service';
+import { LobbyService } from '../../lobby/lobby.service';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import { HpPair, WordSpawnPayload } from './acid-rain.interface';
@@ -71,6 +72,10 @@ describe('AcidRainService', () => {
     save: jest.fn<Promise<unknown>, [unknown]>().mockResolvedValue({}),
   };
 
+  const mockLobbyService = {
+    broadcast: jest.fn(),
+  };
+
   const mockRedisService = {
     set: jest.fn().mockImplementation((key: string, value: string) => {
       redisStore[key] = value;
@@ -115,6 +120,7 @@ describe('AcidRainService', () => {
         },
         { provide: getRepositoryToken(User), useValue: mockUserRepository },
         { provide: RedisService, useValue: mockRedisService },
+        { provide: LobbyService, useValue: mockLobbyService },
       ],
     }).compile();
 
