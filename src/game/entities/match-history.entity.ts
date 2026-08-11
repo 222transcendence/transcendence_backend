@@ -10,6 +10,11 @@ import {
 import { User } from '../../user/entities/user.entity';
 import { MatchParticipant } from './match-participant.entity';
 
+export enum MatchMode {
+  PVP = 'PVP',
+  AI_PRACTICE = 'AI_PRACTICE',
+}
+
 @Entity('match_history')
 export class MatchHistory {
   @PrimaryGeneratedColumn('uuid')
@@ -31,6 +36,9 @@ export class MatchHistory {
   /** N인 참가자 목록 (rank, finalHp 포함) */
   @OneToMany(() => MatchParticipant, (p) => p.match, { cascade: true, eager: true })
   participants: MatchParticipant[];
+
+  @Column({ type: 'enum', enum: MatchMode, default: MatchMode.PVP })
+  mode: MatchMode;
 
   @Column({ type: 'int' })
   roundsPlayed: number;

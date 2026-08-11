@@ -14,6 +14,7 @@ import { Server, Socket } from 'socket.io';
 import { UserService } from '../../user/user.service';
 import { RedisService } from '../../redis/redis.service';
 import { extractWsToken } from '../../common/websocket/ws-jwt.util';
+import { websocketConnections } from '../../metrics/metrics.registry';
 import { AcidRainService } from './acid-rain.service';
 import type { JoinRoomPayload, LeaveRoomPayload, WordSubmitPayload } from './acid-rain.interface';
 
@@ -49,6 +50,7 @@ export class AcidRainGateway implements OnGatewayConnection, OnGatewayDisconnect
       const user = await this.userService.findOne(payload.sub);
       (client.data as GameSocketData).userId = user.id;
       (client.data as GameSocketData).nickname = user.nickname;
+      websocketConnections.inc({ namespace: 'game' });
       this.logger.log(`Connected: ${client.id} (${user.nickname})`);
     } catch {
       this.logger.warn(`Unauthorized: ${client.id} — disconnecting`);
@@ -61,6 +63,8 @@ export class AcidRainGateway implements OnGatewayConnection, OnGatewayDisconnect
   handleDisconnect(client: Socket) {
     const { userId, nickname, roomId } = client.data as GameSocketData;
     this.logger.log(`Disconnected: ${client.id} (${nickname ?? 'unknown'})`);
+
+    if (userId) websocketConnections.dec({ namespace: 'game' });
 
     if (userId && roomId) {
       this.acidRainService.handleDisconnect(roomId, userId, this.server);

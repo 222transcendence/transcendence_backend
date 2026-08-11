@@ -18,6 +18,7 @@ import { UserService } from '../user/user.service';
 import { FriendService } from '../friend/friend.service';
 import { RedisService } from '../redis/redis.service';
 import { MessageType } from './entities/chat-message.entity';
+import { websocketConnections } from '../metrics/metrics.registry';
 
 export type OnlineStatus = 'ONLINE' | 'OFFLINE' | 'IN_GAME';
 
@@ -55,6 +56,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.trackSocket(user.id, client.id);
       await this.setUserStatus(user.id, 'ONLINE');
       await this.notifyFriends(user.id, 'ONLINE');
+      websocketConnections.inc({ namespace: 'chat' });
 
       this.logger.log(`Client connected: ${client.id} (user: ${user.nickname})`);
     } catch {
@@ -70,6 +72,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     if (user) {
       this.untrackSocket(user.id, client.id);
+      websocketConnections.dec({ namespace: 'chat' });
       // Only go OFFLINE when all sockets for this user are gone
       if (!this.userSockets.has(user.id)) {
         await this.setUserStatus(user.id, 'OFFLINE');
@@ -152,7 +155,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  private async notifyFriends(userId: string, status: OnlineStatus) {
+  async notifyFriends(userId: string, status: OnlineStatus) {
     try {
       const friends = await this.friendService.getFriends(userId);
       const payload = { userId, status };
