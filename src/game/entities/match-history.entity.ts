@@ -26,7 +26,7 @@ export class MatchHistory {
   winner: User | null;
 
   @Column({ type: 'int' })
-  turnsPlayed: number;
+  roundsPlayed: number;
 
   @Column({ type: 'jsonb' })
   matchData: Record<string, unknown>;

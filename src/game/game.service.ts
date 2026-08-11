@@ -610,7 +610,7 @@ export class GameService {
           : room.winnerId === guest.id
             ? guest
             : null,
-      turnsPlayed: room.currentTurn,
+      roundsPlayed: room.currentTurn,
       matchData: {
         winnerId: room.winnerId,
         finalHostHp: room.host.hp,
