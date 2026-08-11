@@ -31,6 +31,7 @@ export class ChatService {
 
   async getHistory() {
     const messages = await this.chatMessageRepository.find({
+      where: { type: MessageType.NORMAL },
       order: { createdAt: 'DESC' },
       take: HISTORY_LIMIT,
     });
