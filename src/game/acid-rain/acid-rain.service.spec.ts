@@ -313,7 +313,10 @@ describe('AcidRainService', () => {
       expect(ended[0]).toEqual(
         expect.objectContaining({ reason: 'TIME_LIMIT', winnerId: null }),
       );
-      expect(mockUserRepository.increment).not.toHaveBeenCalled();
+      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: HOST.userId }, 'draws', 1);
+      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: GUEST.userId }, 'draws', 1);
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'wins', 1);
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'losses', 1);
     });
   });
 

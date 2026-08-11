@@ -418,12 +418,17 @@ export class AcidRainService implements OnModuleInit {
       });
       await this.matchHistoryRepo.save(history);
 
-      // wins/losses 업데이트 (무승부는 어느 쪽에도 기록하지 않는다)
+      // wins/losses 업데이트. 무승부는 승패 어느 쪽도 아니지만 게임을 하긴 했으므로 draws로 카운트한다.
       if (winnerId) {
         const loserId = winnerId === session.host.userId ? session.guest.userId : session.host.userId;
         await Promise.all([
           this.userRepo.increment({ id: winnerId }, 'wins', 1),
           this.userRepo.increment({ id: loserId }, 'losses', 1),
+        ]);
+      } else {
+        await Promise.all([
+          this.userRepo.increment({ id: session.host.userId }, 'draws', 1),
+          this.userRepo.increment({ id: session.guest.userId }, 'draws', 1),
         ]);
       }
     } catch (err) {
