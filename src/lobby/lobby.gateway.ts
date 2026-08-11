@@ -11,14 +11,16 @@ import { UserService } from '../user/user.service';
 
 interface LobbyRoom {
   id: string;
-  host: { userId: string; nickname: string; characterId: number; ready: boolean };
-  guest: { userId: string; nickname: string; characterId: number; ready: boolean } | null;
+  host: { userId: string; nickname: string; ready: boolean };
+  guest: { userId: string; nickname: string; ready: boolean } | null;
   status: 'WAITING' | 'IN_GAME';
   createdAt: string;
 }
 
 function toRoomStatus(s: RoomStatus): 'WAITING' | 'IN_GAME' {
-  return s === RoomStatus.IN_GAME || s === RoomStatus.FINISHED ? 'IN_GAME' : 'WAITING';
+  return s === RoomStatus.IN_GAME || s === RoomStatus.FINISHED
+    ? 'IN_GAME'
+    : 'WAITING';
 }
 
 function toLobbyRoom(room: GameRoom): LobbyRoom {
@@ -27,19 +29,17 @@ function toLobbyRoom(room: GameRoom): LobbyRoom {
     host: {
       userId: room.host.userId,
       nickname: room.host.nickname,
-      characterId: room.host.characterId,
-      ready: (room as any).hostReady ?? false,
+      ready: room.host.ready,
     },
     guest: room.guest
       ? {
           userId: room.guest.userId,
           nickname: room.guest.nickname,
-          characterId: room.guest.characterId,
-          ready: (room as any).guestReady ?? false,
+          ready: room.guest.ready,
         }
       : null,
     status: toRoomStatus(room.status),
-    createdAt: (room as any).createdAt ?? new Date().toISOString(),
+    createdAt: room.createdAt,
   };
 }
 
@@ -58,15 +58,25 @@ export class LobbyGateway implements OnModuleInit {
   onModuleInit() {
     // wss is created without its own server; we attach to HTTP server in main.ts
     this.wss = new WebSocketServer({ noServer: true });
-    this.wss.on('connection', (ws: WebSocket, userId: string, nickname: string) => {
-      this.onConnection(ws, userId, nickname);
-    });
+    this.wss.on(
+      'connection',
+      (ws: WebSocket, userId: string, nickname: string) => {
+        this.onConnection(ws, userId, nickname);
+      },
+    );
   }
 
   /** Called from main.ts on HTTP upgrade events for /ws/lobby */
-  handleUpgrade(request: http.IncomingMessage, socket: net.Socket, head: Buffer): void {
+  handleUpgrade(
+    request: http.IncomingMessage,
+    socket: net.Socket,
+    head: Buffer,
+  ): void {
     const rawUrl = request.url ?? '/';
-    const url = new URL(rawUrl, `http://${request.headers.host ?? 'localhost'}`);
+    const url = new URL(
+      rawUrl,
+      `http://${request.headers.host ?? 'localhost'}`,
+    );
 
     if (url.pathname !== '/ws/lobby') {
       socket.destroy();
@@ -92,14 +102,17 @@ export class LobbyGateway implements OnModuleInit {
       return;
     }
 
-    this.userService.findOne(userId).then((user) => {
-      this.wss.handleUpgrade(request, socket, head, (ws) => {
-        this.wss.emit('connection', ws, userId, user.nickname);
+    this.userService
+      .findOne(userId)
+      .then((user) => {
+        this.wss.handleUpgrade(request, socket, head, (ws) => {
+          this.wss.emit('connection', ws, userId, user.nickname);
+        });
+      })
+      .catch(() => {
+        socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
+        socket.destroy();
       });
-    }).catch(() => {
-      socket.write('HTTP/1.1 401 Unauthorized\r\n\r\n');
-      socket.destroy();
-    });
   }
 
   private onConnection(ws: WebSocket, userId: string, nickname: string): void {
@@ -108,13 +121,21 @@ export class LobbyGateway implements OnModuleInit {
 
     ws.on('message', (data) => {
       try {
-        const msg = JSON.parse(data.toString()) as { type: string; payload?: unknown; seq?: number };
+        const msg = JSON.parse(data.toString()) as {
+          type: string;
+          payload?: unknown;
+          seq?: number;
+        };
         this.handleMessage(client, msg).catch((err) => {
           this.logger.error(`Handler error: ${String(err)}`);
-          this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: String(err?.message ?? err) });
+          this.lobbyService.sendTo(client, 'ACTION_REJECTED', {
+            message: String(err?.message ?? err),
+          });
         });
       } catch {
-        this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: 'Invalid JSON' });
+        this.lobbyService.sendTo(client, 'ACTION_REJECTED', {
+          message: 'Invalid JSON',
+        });
       }
     });
 
@@ -127,28 +148,39 @@ export class LobbyGateway implements OnModuleInit {
     });
   }
 
-  private async handleMessage(client: LobbyClient, msg: { type: string; payload?: unknown; seq?: number }): Promise<void> {
+  private async handleMessage(
+    client: LobbyClient,
+    msg: { type: string; payload?: unknown; seq?: number },
+  ): Promise<void> {
     const { type, payload } = msg;
 
     switch (type) {
       case 'LIST_ROOMS': {
         const rooms = await this.gameService.getWaitingRooms();
-        this.lobbyService.sendTo(client, 'ROOM_LIST', { rooms: rooms.map(toLobbyRoom) });
+        this.lobbyService.sendTo(client, 'ROOM_LIST', {
+          rooms: rooms.map(toLobbyRoom),
+        });
         break;
       }
 
       case 'CREATE_ROOM': {
-        const { characterId } = payload as { characterId: number };
-        const room = await this.gameService.createRoom(client.userId, client.nickname, characterId);
-        const lobbyRoom = toLobbyRoom({ ...room, createdAt: new Date().toISOString() } as any);
+        const room = await this.gameService.createRoom(
+          client.userId,
+          client.nickname,
+        );
+        const lobbyRoom = toLobbyRoom(room);
         await this.broadcastRoomList();
         this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: lobbyRoom });
         break;
       }
 
       case 'JOIN_ROOM': {
-        const { roomId, characterId } = payload as { roomId: string; characterId: number };
-        const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname, characterId);
+        const { roomId } = payload as { roomId: string };
+        const room = await this.gameService.joinRoom(
+          roomId,
+          client.userId,
+          client.nickname,
+        );
         const lobbyRoom = toLobbyRoom(room);
         await this.broadcastRoomList();
         this.lobbyService.broadcast('ROOM_UPDATED', { room: lobbyRoom });
@@ -159,9 +191,13 @@ export class LobbyGateway implements OnModuleInit {
         const { roomId } = payload as { roomId: string };
         const room = await this.gameService.getRoom(roomId);
         if (!room) {
-          this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: 'Room not found' });
+          this.lobbyService.sendTo(client, 'ACTION_REJECTED', {
+            message: 'Room not found',
+          });
         } else {
-          this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: toLobbyRoom(room) });
+          this.lobbyService.sendTo(client, 'ROOM_UPDATED', {
+            room: toLobbyRoom(room),
+          });
         }
         break;
       }
@@ -175,7 +211,11 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'SET_READY': {
         const { roomId, ready } = payload as { roomId: string; ready: boolean };
-        const room = await this.gameService.setReady(roomId, client.userId, ready);
+        const room = await this.gameService.setReady(
+          roomId,
+          client.userId,
+          ready,
+        );
         const lobbyRoom = toLobbyRoom(room);
         this.lobbyService.broadcast('ROOM_UPDATED', { room: lobbyRoom });
 
@@ -187,7 +227,9 @@ export class LobbyGateway implements OnModuleInit {
       }
 
       default:
-        this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: `Unknown message type: ${type}` });
+        this.lobbyService.sendTo(client, 'ACTION_REJECTED', {
+          message: `Unknown message type: ${type}`,
+        });
     }
   }
 
