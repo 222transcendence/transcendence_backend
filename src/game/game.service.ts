@@ -694,22 +694,48 @@ export class GameService {
   /**
    * Host leaves → delete room. Guest leaves → remove guest from room.
    */
-  async leaveRoom(roomId: string, userId: string): Promise<void> {
+  /**
+   * 방 퇴장.
+   * - 게스트 퇴장: 슬롯만 비움.
+   * - 호스트 퇴장 + 게스트 있음: 게스트를 호스트로 승격, 방 유지.
+   * - 호스트 퇴장 + 게스트 없음: 방 삭제.
+   * 반환값: 업데이트된 방(유지 시) | null(삭제 시)
+   */
+  async leaveRoom(
+    roomId: string,
+    userId: string,
+  ): Promise<(GameRoom & { hostReady: boolean; guestReady: boolean; createdAt: string }) | null> {
     const roomKey = `game:room:${roomId}`;
     const data = await this.redisService.get(roomKey);
-    if (!data) return;
+    if (!data) return null;
 
     const room = JSON.parse(data) as GameRoom & { hostReady?: boolean; guestReady?: boolean; createdAt?: string };
 
     if (room.host.userId === userId) {
-      await this.redisService.getClient().del(roomKey);
-      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+      if (room.guest) {
+        // 호스트 위임: 게스트 → 호스트 승격
+        room.host = { ...room.guest };
+        room.hostReady = false;
+        room.guest = undefined;
+        room.guestReady = false;
+        await this.redisService.set(roomKey, JSON.stringify(room), 7200);
+        await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+        return room as GameRoom & { hostReady: boolean; guestReady: boolean; createdAt: string };
+      } else {
+        // 방 폭파
+        await this.redisService.getClient().del(roomKey);
+        await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+        return null;
+      }
     } else if (room.guest?.userId === userId) {
       room.guest = undefined;
       room.guestReady = false;
       await this.redisService.set(roomKey, JSON.stringify(room), 7200);
       await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+      return room as GameRoom & { hostReady: boolean; guestReady: boolean; createdAt: string };
     }
+
+    return null;
   }
 
   /**

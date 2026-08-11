@@ -168,7 +168,14 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'LEAVE_ROOM': {
         const { roomId } = payload as { roomId: string };
-        await this.gameService.leaveRoom(roomId, client.userId);
+        const remaining = await this.gameService.leaveRoom(roomId, client.userId);
+        if (remaining) {
+          // 호스트 위임 또는 게스트 퇴장 — 방 상태 변경 알림
+          this.lobbyService.broadcast('ROOM_UPDATED', { room: toLobbyRoom(remaining) });
+        } else {
+          // 방 삭제
+          this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
+        }
         await this.broadcastRoomList();
         break;
       }
