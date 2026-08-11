@@ -173,7 +173,6 @@ export class LobbyGateway implements OnModuleInit {
           client.userId,
           client.nickname,
         );
-        client.roomId = room.id;
         const lobbyRoom = toLobbyRoom(room);
         await this.broadcastRoomList();
         this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: lobbyRoom });
@@ -187,7 +186,6 @@ export class LobbyGateway implements OnModuleInit {
           client.userId,
           client.nickname,
         );
-        client.roomId = room.id;
         const lobbyRoom = toLobbyRoom(room);
         await this.broadcastRoomList();
         this.lobbyService.broadcast('ROOM_UPDATED', { room: lobbyRoom });
@@ -202,6 +200,7 @@ export class LobbyGateway implements OnModuleInit {
             message: 'Room not found',
           });
         } else {
+          client.roomId = room.id;
           this.lobbyService.sendTo(client, 'ROOM_UPDATED', {
             room: toLobbyRoom(room),
           });
