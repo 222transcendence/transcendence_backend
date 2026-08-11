@@ -26,8 +26,8 @@ function toLobbyRoom(room: GameRoom): LobbyRoom {
   return {
     id: room.id,
     hostUserId: room.hostUserId,
-    maxPlayers: room.maxPlayers,
-    players: room.players.map((p) => ({
+    maxPlayers: room.maxPlayers ?? 4,
+    players: (room.players ?? []).map((p) => ({
       userId: p.userId,
       nickname: p.nickname,
       avatar: p.avatar,

@@ -16,7 +16,7 @@ export class CreateMatchParticipants1800000002000 implements MigrationInterface 
         CONSTRAINT "FK_match_participants_match"
           FOREIGN KEY ("matchId") REFERENCES "match_history"("id") ON DELETE CASCADE,
         CONSTRAINT "FK_match_participants_user"
-          FOREIGN KEY ("userId") REFERENCES "user"("id") ON DELETE CASCADE
+          FOREIGN KEY ("userId") REFERENCES "users"("id") ON DELETE CASCADE
       )
     `);
 
