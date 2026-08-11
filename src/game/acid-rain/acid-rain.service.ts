@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Server } from 'socket.io';
@@ -23,7 +23,7 @@ const LANE_COUNT = 5;
 const REDIS_TTL = 1800; // seconds
 
 @Injectable()
-export class AcidRainService {
+export class AcidRainService implements OnModuleInit {
   private readonly logger = new Logger(AcidRainService.name);
   // roomId → in-memory session (단일 인스턴스 기준)
   private readonly sessions = new Map<string, AcidRainSession>();
@@ -37,6 +37,19 @@ export class AcidRainService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
   ) {}
+
+  async onModuleInit() {
+    const updated = await this.userRepo.update(
+      { status: UserStatus.IN_GAME },
+      { status: UserStatus.ONLINE },
+    );
+    const client = this.redisService.getClient();
+    const keys = await client.keys('game:acidroom:*');
+    if (keys.length > 0) await client.del(...keys);
+    this.logger.log(
+      `Boot cleanup: reset ${updated.affected ?? 0} IN_GAME users, cleared ${keys.length} stale sessions`,
+    );
+  }
 
   // ─── 세션 조회 ────────────────────────────────────────────────────────────
 
