@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { RedisService } from '../redis/redis.service';
 import { User, UserStatus } from '../user/entities/user.entity';
 import { MatchHistory } from './entities/match-history.entity';
+import { MatchParticipant } from './entities/match-participant.entity';
 import { GameRoom, PlayerSession, RoomStatus } from './game.interface';
 import { MatchMode } from './entities/match-history.entity';
 import { randomUUID } from 'crypto';
@@ -21,6 +22,8 @@ export class GameService {
     private readonly userRepository: Repository<User>,
     @InjectRepository(MatchHistory)
     private readonly matchHistoryRepository: Repository<MatchHistory>,
+    @InjectRepository(MatchParticipant)
+    private readonly participantRepository: Repository<MatchParticipant>,
     private readonly redisService: RedisService,
   ) {}
 
@@ -176,29 +179,54 @@ export class GameService {
     };
   }
 
+  /**
+   * 유저의 전적 목록. N인 매치(participants 사용)와 기존 2인 매치
+   * (hostUser/guestUser 사용) 모두 지원한다.
+   */
   async getUserMatches(userId: string, page: number, limit: number, mode?: MatchMode) {
-    const baseWhere = mode
-      ? [
-          { hostUser: { id: userId }, mode },
-          { guestUser: { id: userId }, mode },
-        ]
-      : [
-          { hostUser: { id: userId } },
-          { guestUser: { id: userId } },
-        ];
-    const [matches, total] = await this.matchHistoryRepository.findAndCount({
-      where: baseWhere,
-      order: { createdAt: 'DESC' },
-      skip: (page - 1) * limit,
-      take: limit,
-    });
+    const participantMatchIds = (
+      await this.participantRepository
+        .createQueryBuilder('p')
+        .select('p.matchId', 'matchId')
+        .where('p.userId = :userId', { userId })
+        .getRawMany<{ matchId: string }>()
+    ).map((r) => r.matchId);
 
-    const safeUser = (u: User | null) =>
+    const qb = this.matchHistoryRepository
+      .createQueryBuilder('m')
+      .leftJoinAndSelect('m.hostUser', 'hostUser')
+      .leftJoinAndSelect('m.guestUser', 'guestUser')
+      .leftJoinAndSelect('m.winner', 'winner')
+      .leftJoinAndSelect('m.participants', 'participants')
+      .leftJoinAndSelect('participants.user', 'participantUser')
+      .orderBy('m.createdAt', 'DESC')
+      .skip((page - 1) * limit)
+      .take(limit);
+
+    if (participantMatchIds.length > 0) {
+      qb.where(
+        '(m.id IN (:...participantMatchIds) OR m.hostUserId = :userId OR m.guestUserId = :userId)',
+        { participantMatchIds, userId },
+      );
+    } else {
+      qb.where('(m.hostUserId = :userId OR m.guestUserId = :userId)', { userId });
+    }
+    if (mode) qb.andWhere('m.mode = :mode', { mode });
+
+    const [matches, total] = await qb.getManyAndCount();
+
+    const safeUser = (u: User | null | undefined) =>
       u ? { id: u.id, nickname: u.nickname, avatar: u.avatar } : null;
 
     return {
       matches: matches.map((m) => ({
         id: m.id,
+        // N인 매치는 participants[], 구형 2인 매치는 hostUser/guestUser(하위호환)
+        participants: m.participants?.map((p) => ({
+          user: safeUser(p.user),
+          finalHp: p.finalHp,
+          rank: p.rank,
+        })) ?? [],
         hostUser: safeUser(m.hostUser),
         guestUser: safeUser(m.guestUser),
         winner: safeUser(m.winner),
