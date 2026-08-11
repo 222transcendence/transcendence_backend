@@ -15,7 +15,7 @@ import { UserService } from '../../user/user.service';
 import { RedisService } from '../../redis/redis.service';
 import { extractWsToken } from '../../common/websocket/ws-jwt.util';
 import { AcidRainService } from './acid-rain.service';
-import { JoinRoomPayload, LeaveRoomPayload, WordSubmitPayload } from './acid-rain.interface';
+import type { JoinRoomPayload, LeaveRoomPayload, WordSubmitPayload } from './acid-rain.interface';
 
 interface GameSocketData {
   userId?: string;
