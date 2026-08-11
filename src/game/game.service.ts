@@ -120,23 +120,36 @@ export class GameService {
   }
 
   /**
-   * Host leaves → delete room. Guest leaves → remove guest from room.
+   * Host leaves → if guest exists, promote guest to new host; otherwise delete room.
+   * Guest leaves → remove guest from room.
+   * Returns updated room if still alive, null if deleted.
    */
-  async leaveRoom(roomId: string, userId: string): Promise<void> {
+  async leaveRoom(roomId: string, userId: string): Promise<GameRoom | null> {
     const roomKey = `game:room:${roomId}`;
     const data = await this.redisService.get(roomKey);
-    if (!data) return;
+    if (!data) return null;
 
     const room = JSON.parse(data) as GameRoom;
 
     if (room.host.userId === userId) {
-      await this.redisService.getClient().del(roomKey);
-      await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+      if (room.guest) {
+        room.host = { ...room.guest, ready: false };
+        room.guest = undefined;
+        await this.redisService.set(roomKey, JSON.stringify(room), 7200);
+        await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+        return room;
+      } else {
+        await this.redisService.getClient().del(roomKey);
+        await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+        return null;
+      }
     } else if (room.guest?.userId === userId) {
       room.guest = undefined;
       await this.redisService.set(roomKey, JSON.stringify(room), 7200);
       await this.userRepository.update(userId, { status: UserStatus.ONLINE });
+      return room;
     }
+    return room;
   }
 
   /**
@@ -196,7 +209,18 @@ export class GameService {
       skip: (page - 1) * limit,
       take: limit,
     });
-    return { matches, total, page, limit };
+    const safeUser = (u: User | null) =>
+      u ? { id: u.id, nickname: u.nickname, avatar: u.avatar } : null;
+    const mapped = matches.map((m) => ({
+      id: m.id,
+      hostUser: safeUser(m.hostUser),
+      guestUser: safeUser(m.guestUser),
+      winner: safeUser(m.winner),
+      roundsPlayed: m.roundsPlayed,
+      matchData: m.matchData,
+      createdAt: m.createdAt,
+    }));
+    return { matches: mapped, total, page, limit };
   }
 
   async getLeaderboard() {
