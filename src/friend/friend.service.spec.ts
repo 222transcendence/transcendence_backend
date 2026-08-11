@@ -16,6 +16,7 @@ describe('FriendService', () => {
   let service: FriendService;
   let friendRepository: Repository<Friend>;
   let userRepository: Repository<User>;
+  let redisService: RedisService;
 
   const userA: User = {
     id: 'user-a',
@@ -75,6 +76,7 @@ describe('FriendService', () => {
       getRepositoryToken(Friend),
     );
     userRepository = module.get<Repository<User>>(getRepositoryToken(User));
+    redisService = module.get<RedisService>(RedisService);
   });
 
   it('should be defined', () => {
@@ -227,6 +229,30 @@ describe('FriendService', () => {
         nickname: 'userB',
         avatar: userB.avatar,
         status: UserStatus.OFFLINE,
+      },
+    ]);
+  });
+
+  it('getFriends should report IN_GAME from DB status even if Redis presence says ONLINE', async () => {
+    const inGameUserB = { ...userB, status: UserStatus.IN_GAME };
+    const accepted = {
+      id: 'f-1',
+      requester: userA,
+      receiver: inGameUserB,
+      status: FriendStatus.ACCEPTED,
+    } as Friend;
+
+    jest.spyOn(friendRepository, 'find').mockResolvedValue([accepted]);
+    jest.spyOn(redisService, 'get').mockResolvedValue(UserStatus.ONLINE);
+
+    const result = await service.getFriends('user-a');
+
+    expect(result).toEqual([
+      {
+        id: 'user-b',
+        nickname: 'userB',
+        avatar: userB.avatar,
+        status: UserStatus.IN_GAME,
       },
     ]);
   });

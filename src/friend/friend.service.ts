@@ -8,7 +8,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Friend, FriendStatus } from './entities/friend.entity';
-import { User } from '../user/entities/user.entity';
+import { User, UserStatus } from '../user/entities/user.entity';
 import { RedisService } from '../redis/redis.service';
 
 type SafeUser = Pick<User, 'id' | 'nickname' | 'status' | 'avatar'>;
@@ -167,7 +167,9 @@ export class FriendService {
       id: f.id,
       nickname: f.nickname,
       avatar: f.avatar,
-      status: statuses[i] ?? 'OFFLINE',
+      // 게임 로직은 DB status만 IN_GAME으로 갱신하고 Redis 프레즌스는 갱신하지 않으므로,
+      // IN_GAME은 DB를 우선하고 그 외에는 Redis 프레즌스를 따른다.
+      status: f.status === UserStatus.IN_GAME ? UserStatus.IN_GAME : (statuses[i] ?? 'OFFLINE'),
     }));
   }
 
