@@ -7,14 +7,16 @@ export enum RoomStatus {
 export interface PlayerSession {
   userId: string;
   nickname: string;
+  avatar?: string;
   ready: boolean;
 }
 
 export interface GameRoom {
   id: string;
+  hostUserId: string;
+  maxPlayers: number;
   status: RoomStatus;
-  host: PlayerSession;
-  guest?: PlayerSession;
+  players: PlayerSession[];
   createdAt: string;
   winnerId?: string;
 }

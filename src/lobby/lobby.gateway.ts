@@ -12,33 +12,28 @@ import { websocketConnections } from '../metrics/metrics.registry';
 
 interface LobbyRoom {
   id: string;
-  host: { userId: string; nickname: string; ready: boolean };
-  guest: { userId: string; nickname: string; ready: boolean } | null;
+  hostUserId: string;
+  maxPlayers: number;
+  players: { userId: string; nickname: string; avatar?: string; ready: boolean }[];
   status: 'WAITING' | 'IN_GAME';
   createdAt: string;
 }
 
 function toRoomStatus(s: RoomStatus): 'WAITING' | 'IN_GAME' {
-  return s === RoomStatus.IN_GAME || s === RoomStatus.FINISHED
-    ? 'IN_GAME'
-    : 'WAITING';
+  return s === RoomStatus.IN_GAME || s === RoomStatus.FINISHED ? 'IN_GAME' : 'WAITING';
 }
 
 function toLobbyRoom(room: GameRoom): LobbyRoom {
   return {
     id: room.id,
-    host: {
-      userId: room.host.userId,
-      nickname: room.host.nickname,
-      ready: room.host.ready,
-    },
-    guest: room.guest
-      ? {
-          userId: room.guest.userId,
-          nickname: room.guest.nickname,
-          ready: room.guest.ready,
-        }
-      : null,
+    hostUserId: room.hostUserId,
+    maxPlayers: room.maxPlayers,
+    players: room.players.map((p) => ({
+      userId: p.userId,
+      nickname: p.nickname,
+      avatar: p.avatar,
+      ready: p.ready,
+    })),
     status: toRoomStatus(room.status),
     createdAt: room.createdAt,
   };
@@ -57,27 +52,19 @@ export class LobbyGateway implements OnModuleInit {
   ) {}
 
   onModuleInit() {
-    // wss is created without its own server; we attach to HTTP server in main.ts
     this.wss = new WebSocketServer({ noServer: true });
-    this.wss.on(
-      'connection',
-      (ws: WebSocket, userId: string, nickname: string) => {
-        this.onConnection(ws, userId, nickname);
-      },
-    );
+    this.wss.on('connection', (ws: WebSocket, userId: string, nickname: string) => {
+      this.onConnection(ws, userId, nickname);
+    });
   }
 
-  /** Called from main.ts on HTTP upgrade events for /ws/lobby */
   handleUpgrade(
     request: http.IncomingMessage,
     socket: net.Socket,
     head: Buffer,
   ): void {
     const rawUrl = request.url ?? '/';
-    const url = new URL(
-      rawUrl,
-      `http://${request.headers.host ?? 'localhost'}`,
-    );
+    const url = new URL(rawUrl, `http://${request.headers.host ?? 'localhost'}`);
 
     if (url.pathname !== '/ws/lobby') {
       socket.destroy();
@@ -135,9 +122,7 @@ export class LobbyGateway implements OnModuleInit {
           });
         });
       } catch {
-        this.lobbyService.sendTo(client, 'ACTION_REJECTED', {
-          message: 'Invalid JSON',
-        });
+        this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: 'Invalid JSON' });
       }
     });
 
@@ -173,33 +158,29 @@ export class LobbyGateway implements OnModuleInit {
     switch (type) {
       case 'LIST_ROOMS': {
         const rooms = await this.gameService.getWaitingRooms();
-        this.lobbyService.sendTo(client, 'ROOM_LIST', {
-          rooms: rooms.map(toLobbyRoom),
-        });
+        this.lobbyService.sendTo(client, 'ROOM_LIST', { rooms: rooms.map(toLobbyRoom) });
         break;
       }
 
       case 'CREATE_ROOM': {
+        const { maxPlayers } = (payload ?? {}) as { maxPlayers?: number };
         const room = await this.gameService.createRoom(
           client.userId,
           client.nickname,
+          maxPlayers,
         );
-        const lobbyRoom = toLobbyRoom(room);
+        client.roomId = room.id;
         await this.broadcastRoomList();
-        this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: lobbyRoom });
+        this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: toLobbyRoom(room) });
         break;
       }
 
       case 'JOIN_ROOM': {
         const { roomId } = payload as { roomId: string };
-        const room = await this.gameService.joinRoom(
-          roomId,
-          client.userId,
-          client.nickname,
-        );
-        const lobbyRoom = toLobbyRoom(room);
+        const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname);
+        client.roomId = room.id;
         await this.broadcastRoomList();
-        this.lobbyService.broadcast('ROOM_UPDATED', { room: lobbyRoom });
+        this.lobbyService.broadcast('ROOM_UPDATED', { room: toLobbyRoom(room) });
         break;
       }
 
@@ -207,14 +188,10 @@ export class LobbyGateway implements OnModuleInit {
         const { roomId } = payload as { roomId: string };
         const room = await this.gameService.getRoom(roomId);
         if (!room) {
-          this.lobbyService.sendTo(client, 'ACTION_REJECTED', {
-            message: 'Room not found',
-          });
+          this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: 'Room not found' });
         } else {
           client.roomId = room.id;
-          this.lobbyService.sendTo(client, 'ROOM_UPDATED', {
-            room: toLobbyRoom(room),
-          });
+          this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: toLobbyRoom(room) });
         }
         break;
       }
@@ -234,16 +211,14 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'SET_READY': {
         const { roomId, ready } = payload as { roomId: string; ready: boolean };
-        const room = await this.gameService.setReady(
-          roomId,
-          client.userId,
-          ready,
-        );
+        const room = await this.gameService.setReady(roomId, client.userId, ready);
         const lobbyRoom = toLobbyRoom(room);
         this.lobbyService.broadcast('ROOM_UPDATED', { room: lobbyRoom });
 
-        // Both players ready → GAME_START
-        if (lobbyRoom.host.ready && lobbyRoom.guest && lobbyRoom.guest.ready) {
+        // 전원 ready + 최소 2명 → GAME_START
+        const allReady =
+          lobbyRoom.players.length >= 2 && lobbyRoom.players.every((p) => p.ready);
+        if (allReady) {
           this.lobbyService.clearRoomForAllClients(roomId);
           this.lobbyService.broadcast('GAME_START', { roomId });
         }
