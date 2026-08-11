@@ -46,7 +46,9 @@ describe('ChatController', () => {
 
       const result = await controller.getHistory();
       expect(chatService.getHistory).toHaveBeenCalled();
-      expect(result).toEqual(messages);
+      expect(result.data).toEqual(messages);
+      expect(result.error).toBeNull();
+      expect(result.status).toBe(200);
     });
   });
 });

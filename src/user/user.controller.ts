@@ -31,14 +31,14 @@ export class UserController {
   @Get('me')
   async getMe(@CurrentUser() user: User) {
     const { password, ...result } = user;
-    return result;
+    return { timestamp: new Date().toISOString(), status: 200, data: result, error: null };
   }
 
   @Get(':id')
   async getUser(@Param('id') id: string) {
     const targetUser = await this.userService.findOne(id);
     const { password, email, ...result } = targetUser;
-    return result;
+    return { timestamp: new Date().toISOString(), status: 200, data: result, error: null };
   }
 
   @Get(':id/status')
@@ -64,7 +64,7 @@ export class UserController {
 
     const updatedUser = await this.userService.update(user.id, updateProfileDto);
     const { password, ...result } = updatedUser;
-    return result;
+    return { timestamp: new Date().toISOString(), status: 200, data: result, error: null };
   }
 
   @Post('me/avatar')
@@ -82,6 +82,6 @@ export class UserController {
       avatar: avatarUrl,
     });
     const { password, ...result } = updatedUser;
-    return result;
+    return { timestamp: new Date().toISOString(), status: 200, data: result, error: null };
   }
 }

@@ -10,6 +10,7 @@ import { Repository } from 'typeorm';
 import { FriendService } from './friend.service';
 import { Friend, FriendStatus } from './entities/friend.entity';
 import { User, UserStatus } from '../user/entities/user.entity';
+import { RedisService } from '../redis/redis.service';
 
 describe('FriendService', () => {
   let service: FriendService;
@@ -58,6 +59,12 @@ describe('FriendService', () => {
           provide: getRepositoryToken(User),
           useValue: {
             findOne: jest.fn(),
+          },
+        },
+        {
+          provide: RedisService,
+          useValue: {
+            get: jest.fn(),
           },
         },
       ],
@@ -218,6 +225,7 @@ describe('FriendService', () => {
       {
         id: 'user-b',
         nickname: 'userB',
+        avatar: userB.avatar,
         status: UserStatus.OFFLINE,
       },
     ]);

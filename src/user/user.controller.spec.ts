@@ -53,9 +53,9 @@ describe('UserController', () => {
   describe('getMe', () => {
     it('should return own profile excluding password', async () => {
       const result = await controller.getMe(mockUser);
-      expect(result).not.toHaveProperty('password');
-      expect(result.id).toBe(mockUser.id);
-      expect(result.email).toBe(mockUser.email);
+      expect(result.data).not.toHaveProperty('password');
+      expect(result.data.id).toBe(mockUser.id);
+      expect(result.data.email).toBe(mockUser.email);
     });
   });
 
@@ -65,10 +65,10 @@ describe('UserController', () => {
 
       const result = await controller.getUser('uuid-1234');
       expect(service.findOne).toHaveBeenCalledWith('uuid-1234');
-      expect(result).not.toHaveProperty('password');
-      expect(result).not.toHaveProperty('email');
-      expect(result.id).toBe(mockUser.id);
-      expect(result.nickname).toBe(mockUser.nickname);
+      expect(result.data).not.toHaveProperty('password');
+      expect(result.data).not.toHaveProperty('email');
+      expect(result.data.id).toBe(mockUser.id);
+      expect(result.data.nickname).toBe(mockUser.nickname);
     });
 
     it('should propagate NotFoundException if user does not exist', async () => {
@@ -88,9 +88,9 @@ describe('UserController', () => {
       const result = await controller.updateMe(mockUser, updateDto);
       expect(service.findByNickname).toHaveBeenCalledWith('newname');
       expect(service.update).toHaveBeenCalledWith(mockUser.id, updateDto);
-      expect(result).not.toHaveProperty('password');
-      expect(result.nickname).toBe('newname');
-      expect(result.avatar).toBe('newavatar.png');
+      expect(result.data).not.toHaveProperty('password');
+      expect(result.data.nickname).toBe('newname');
+      expect(result.data.avatar).toBe('newavatar.png');
     });
 
     it('should throw ConflictException if nickname is already taken by another user', async () => {
@@ -110,7 +110,7 @@ describe('UserController', () => {
       const result = await controller.updateMe(mockUser, updateDto);
       expect(service.findByNickname).toHaveBeenCalledWith('tester');
       expect(service.update).toHaveBeenCalledWith(mockUser.id, updateDto);
-      expect(result.nickname).toBe('tester');
+      expect(result.data.nickname).toBe('tester');
     });
   });
 
@@ -128,8 +128,8 @@ describe('UserController', () => {
       expect(service.update).toHaveBeenCalledWith(mockUser.id, {
         avatar: '/uploads/avatars/generated-uuid.png',
       });
-      expect(result).not.toHaveProperty('password');
-      expect(result.avatar).toBe('/uploads/avatars/generated-uuid.png');
+      expect(result.data).not.toHaveProperty('password');
+      expect(result.data.avatar).toBe('/uploads/avatars/generated-uuid.png');
     });
 
     it('should throw BadRequestException when no file is provided', async () => {

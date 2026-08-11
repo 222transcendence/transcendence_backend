@@ -9,6 +9,7 @@ import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Friend, FriendStatus } from './entities/friend.entity';
 import { User } from '../user/entities/user.entity';
+import { RedisService } from '../redis/redis.service';
 
 type SafeUser = Pick<User, 'id' | 'nickname' | 'status' | 'avatar'>;
 
@@ -23,6 +24,7 @@ export class FriendService {
     private readonly friendRepository: Repository<Friend>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    private readonly redisService: RedisService,
   ) {}
 
   async sendFriendRequest(
@@ -141,7 +143,8 @@ export class FriendService {
     {
       id: string;
       nickname: string;
-      status: User['status'];
+      status: string;
+      avatar?: string;
     }[]
   > {
     const relations = await this.friendRepository.find({
@@ -151,18 +154,21 @@ export class FriendService {
       ],
     });
 
-    return relations.map((relation) => {
-      const friendUser =
-        relation.requester.id === currentUserId
-          ? relation.receiver
-          : relation.requester;
+    const friends = relations.map((relation) =>
+      relation.requester.id === currentUserId ? relation.receiver : relation.requester,
+    );
 
-      return {
-        id: friendUser.id,
-        nickname: friendUser.nickname,
-        status: friendUser.status,
-      };
-    });
+    // Redis에서 실시간 상태 조회 (없으면 OFFLINE)
+    const statuses = await Promise.all(
+      friends.map((f) => this.redisService.get(`user:${f.id}:status`)),
+    );
+
+    return friends.map((f, i) => ({
+      id: f.id,
+      nickname: f.nickname,
+      avatar: f.avatar,
+      status: statuses[i] ?? 'OFFLINE',
+    }));
   }
 
   async getPendingRequests(

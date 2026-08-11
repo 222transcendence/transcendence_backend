@@ -20,4 +20,8 @@ export class SendMessageDto {
   @IsOptional()
   @IsEnum(MessageType)
   type?: MessageType;
+
+  @IsOptional()
+  @IsString()
+  targetUserId?: string;
 }

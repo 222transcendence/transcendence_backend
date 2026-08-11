@@ -191,11 +191,10 @@ export class GameService {
 
   async getLeaderboard() {
     const users = await this.userRepository.find({
-      order: { wins: 'DESC' },
+      order: { wins: 'DESC', losses: 'ASC' },
     });
     return users
-      .filter((u) => u.wins + u.losses > 0)
-      .slice(0, 10)
+      .slice(0, 50)
       .map((u) => {
         const totalGames = u.wins + u.losses;
         return {
@@ -205,7 +204,7 @@ export class GameService {
           wins: u.wins,
           losses: u.losses,
           totalGames,
-          winRate: Math.round((u.wins / totalGames) * 100) / 100,
+          winRate: totalGames > 0 ? Math.round((u.wins / totalGames) * 100) / 100 : 0,
         };
       });
   }
