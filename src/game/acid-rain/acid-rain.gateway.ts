@@ -16,7 +16,11 @@ import { RedisService } from '../../redis/redis.service';
 import { extractWsToken } from '../../common/websocket/ws-jwt.util';
 import { websocketConnections } from '../../metrics/metrics.registry';
 import { AcidRainService } from './acid-rain.service';
-import type { JoinRoomPayload, LeaveRoomPayload, WordSubmitPayload } from './acid-rain.interface';
+import type {
+  JoinRoomPayload,
+  LeaveRoomPayload,
+  WordSubmitPayload,
+} from './acid-rain.interface';
 
 interface GameSocketData {
   userId?: string;
@@ -25,8 +29,14 @@ interface GameSocketData {
   roomId?: string;
 }
 
-@WebSocketGateway({ namespace: '/game', path: '/socketio', cors: { origin: '*' } })
-export class AcidRainGateway implements OnGatewayConnection, OnGatewayDisconnect {
+@WebSocketGateway({
+  namespace: '/game',
+  path: '/socketio',
+  cors: { origin: '*' },
+})
+export class AcidRainGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   @WebSocketServer()
   server: Server;
 
@@ -149,8 +159,13 @@ export class AcidRainGateway implements OnGatewayConnection, OnGatewayDisconnect
 
     if (session && session.status === 'IN_PROGRESS') {
       // 진행 중 퇴장 → FORFEIT
-      await this.acidRainService.endMatch(roomId, 'FORFEIT', this.server,
-        session.host.userId === userId ? session.guest.userId : session.host.userId,
+      await this.acidRainService.endMatch(
+        roomId,
+        'FORFEIT',
+        this.server,
+        session.host.userId === userId
+          ? session.guest.userId
+          : session.host.userId,
       );
     }
 
@@ -161,55 +176,28 @@ export class AcidRainGateway implements OnGatewayConnection, OnGatewayDisconnect
   // ─── word_submit ──────────────────────────────────────────────────────────
 
   @SubscribeMessage('word_submit')
-  handleWordSubmit(
+  async handleWordSubmit(
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: WordSubmitPayload,
-  ) {
+  ): Promise<void> {
     const { userId } = client.data as GameSocketData;
     if (!userId) throw new WsException('Unauthorized');
 
-    const { roomId, wordId, text } = payload;
+    const { roomId, wordId, text, attemptId } = payload;
+    const result = await this.acidRainService.submitWord(
+      {
+        roomId,
+        playerId: userId,
+        wordId,
+        text,
+        attemptId,
+      },
+      this.server,
+    );
 
-    // submit_rejected는 제출자에게만 emit해야 하므로 client를 넘김
-    const session = this.acidRainService.getSession(roomId);
-    if (!session) {
-      client.emit('submit_rejected', { wordId, reason: 'NOT_FOUND' });
+    if (!result.accepted) {
+      client.emit('submit_rejected', result.submitRejected);
       return;
     }
-
-    // Service에 판정 위임 (레이스 컨디션은 단일 인스턴스 Node.js 이벤트 루프로 보장)
-    // submit_rejected는 room emit이 아닌 client emit이 필요하므로 여기서 직접 처리
-    this.judgeAndEmit(client, userId, roomId, wordId, text);
-  }
-
-  // word_submit 판정을 gateway에서 처리해 submit_rejected를 client에게만 보냄
-  private judgeAndEmit(
-    client: Socket,
-    userId: string,
-    roomId: string,
-    wordId: string,
-    text: string,
-  ): void {
-    const session = this.acidRainService.getSession(roomId);
-    if (!session || session.status !== 'IN_PROGRESS') return;
-
-    if (session.clearedWords.has(wordId)) {
-      client.emit('submit_rejected', { wordId, reason: 'ALREADY_CLEARED' });
-      return;
-    }
-
-    const word = session.activeWords.get(wordId);
-    if (!word) {
-      client.emit('submit_rejected', { wordId, reason: 'NOT_FOUND' });
-      return;
-    }
-
-    if (word.text !== text) {
-      client.emit('submit_rejected', { wordId, reason: 'WRONG_TEXT' });
-      return;
-    }
-
-    // 정타 처리는 Service에 위임
-    this.acidRainService.judgeSubmit(roomId, userId, wordId, text, this.server);
   }
 }
