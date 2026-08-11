@@ -6,7 +6,12 @@ import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
-import { HpPair, WordSpawnPayload } from './acid-rain.interface';
+import {
+  HpPair,
+  JudgeWordSubmitInput,
+  JudgeWordSubmitResult,
+  WordSpawnPayload,
+} from './acid-rain.interface';
 
 interface WordClearedPayload {
   wordId: string;
@@ -18,10 +23,6 @@ interface WordMissedPayload {
   wordId: string;
   splashDamage: number;
   targetHp: HpPair;
-}
-interface SubmitRejectedPayload {
-  wordId: string;
-  reason: 'ALREADY_CLEARED' | 'NOT_FOUND' | 'WRONG_TEXT';
 }
 interface MatchEndPayload {
   roomId: string;
@@ -70,6 +71,23 @@ describe('AcidRainService', () => {
   const mockMatchHistoryRepository = {
     create: jest.fn().mockImplementation((dto: unknown) => dto),
     save: jest.fn<Promise<unknown>, [unknown]>().mockResolvedValue({}),
+    manager: {
+      transaction: jest
+        .fn()
+        .mockImplementation(
+          async (
+            work: (manager: {
+              getRepository: (target: unknown) => unknown;
+            }) => Promise<unknown>,
+          ) =>
+            work({
+              getRepository: (target: unknown) =>
+                target === User
+                  ? mockUserRepository
+                  : mockMatchHistoryRepository,
+            }),
+        ),
+    },
   };
 
   const mockLobbyService = {
@@ -104,6 +122,35 @@ describe('AcidRainService', () => {
   beforeEach(async () => {
     redisStore = {};
     jest.clearAllMocks();
+    mockUserRepository.update.mockResolvedValue({ affected: 0 });
+    mockUserRepository.findOneBy.mockImplementation(({ id }: { id: string }) =>
+      Promise.resolve({ id, nickname: id }),
+    );
+    mockUserRepository.increment.mockResolvedValue({ affected: 1 });
+    mockMatchHistoryRepository.create.mockImplementation((dto: unknown) => dto);
+    mockMatchHistoryRepository.save.mockResolvedValue({});
+    mockMatchHistoryRepository.manager.transaction.mockImplementation(
+      async (
+        work: (manager: {
+          getRepository: (target: unknown) => unknown;
+        }) => Promise<unknown>,
+      ) =>
+        work({
+          getRepository: (target: unknown) =>
+            target === User ? mockUserRepository : mockMatchHistoryRepository,
+        }),
+    );
+    mockRedisService.set.mockImplementation((key: string, value: string) => {
+      redisStore[key] = value;
+      return Promise.resolve();
+    });
+    mockRedisService.get.mockImplementation((key: string) =>
+      Promise.resolve(redisStore[key] ?? null),
+    );
+    mockRedisService.del.mockImplementation((key: string) => {
+      delete redisStore[key];
+      return Promise.resolve();
+    });
     jest.useFakeTimers();
     jest.setSystemTime(0);
 
@@ -128,6 +175,7 @@ describe('AcidRainService', () => {
   });
 
   afterEach(() => {
+    jest.clearAllTimers();
     jest.useRealTimers();
   });
 
@@ -144,6 +192,12 @@ describe('AcidRainService', () => {
     const spawns = eventsNamed<WordSpawnPayload>('word_spawn');
     expect(spawns.length).toBeGreaterThanOrEqual(1);
     return spawns[0];
+  }
+
+  async function submitWord(
+    input: JudgeWordSubmitInput,
+  ): Promise<JudgeWordSubmitResult> {
+    return service.submitWord(input, server);
   }
 
   describe('spawn — fall duration formula (GAME_DESIGN.md §3.5)', () => {
@@ -164,16 +218,83 @@ describe('AcidRainService', () => {
     });
   });
 
-  describe('judgeSubmit — damage formula (GAME_DESIGN.md §3.6)', () => {
+  describe('submitWord — damage formula (GAME_DESIGN.md §3.6)', () => {
+    it('accepts a correct socket-free judge request and returns broadcast data', async () => {
+      const word = await startAndReachFirstSpawn();
+      const input: JudgeWordSubmitInput = {
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'attempt-1',
+      };
+
+      const result = await submitWord(input);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          accepted: true,
+          roomId: ROOM_ID,
+          playerId: HOST.userId,
+          wordId: word.wordId,
+          attemptId: 'attempt-1',
+          wordStateBefore: 'ACTIVE',
+          wordStateAfter: 'CLEARED',
+          damage: 5 + Math.ceil(word.keystrokes / 2),
+          gameEnded: false,
+          winnerId: null,
+          loserId: null,
+        }),
+      );
+      if (result.accepted) {
+        expect(result.wordCleared).toEqual({
+          wordId: word.wordId,
+          clearedBy: HOST.userId,
+          damage: result.damage,
+          targetHp: result.targetHp,
+        });
+      }
+    });
+
     it('correct hit deals 5 + ceil(keystrokes/2) to the opponent', async () => {
       const word = await startAndReachFirstSpawn();
-      service.judgeSubmit(ROOM_ID, HOST.userId, word.wordId, word.text, server);
+      await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
 
       const cleared = eventsNamed<WordClearedPayload>('word_cleared');
       expect(cleared).toHaveLength(1);
       expect(cleared[0].damage).toBe(5 + Math.ceil(word.keystrokes / 2));
       expect(cleared[0].targetHp.guest).toBe(100 - cleared[0].damage);
       expect(cleared[0].targetHp.host).toBe(100);
+    });
+
+    it('marks a correct submission as ACTIVE to CLEARED', async () => {
+      const word = await startAndReachFirstSpawn();
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.wordStateBefore).toBe('ACTIVE');
+      expect(result.wordStateAfter).toBe('CLEARED');
+      expect(service.getSession(ROOM_ID)?.activeWords.has(word.wordId)).toBe(
+        false,
+      );
+      expect(
+        service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
+      ).toEqual({
+        state: 'CLEARED',
+        playerId: HOST.userId,
+        attemptId: undefined,
+      });
     });
 
     it('a miss (word lands unclaimed) deals fixed 3 damage to both players', async () => {
@@ -184,62 +305,555 @@ describe('AcidRainService', () => {
       expect(missed).toHaveLength(1);
       expect(missed[0].splashDamage).toBe(3);
       expect(missed[0].targetHp).toEqual({ host: 97, guest: 97 });
+      expect(
+        service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
+      ).toEqual({
+        state: 'MISSED',
+      });
+    });
+
+    it('returns KO metadata when a correct submission brings a player to 0 HP', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.guest = 1;
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(result.gameEnded).toBe(true);
+      expect(result.endReason).toBe('KO');
+      expect(result.winnerId).toBe(HOST.userId);
+      expect(result.loserId).toBe(GUEST.userId);
+      expect(result.targetHp).toEqual({ host: 100, guest: 0 });
     });
 
     it('rejects a wordId that was already cleared (idempotent, race-condition safe)', async () => {
       const word = await startAndReachFirstSpawn();
-      service.judgeSubmit(ROOM_ID, HOST.userId, word.wordId, word.text, server);
+      await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
       emitSpy.mockClear();
 
-      service.judgeSubmit(
-        ROOM_ID,
-        GUEST.userId,
-        word.wordId,
-        word.text,
-        server,
-      );
+      const rejected = await submitWord({
+        roomId: ROOM_ID,
+        playerId: GUEST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
 
       expect(eventsNamed('word_cleared')).toHaveLength(0);
-      const rejected = eventsNamed<SubmitRejectedPayload>('submit_rejected');
-      expect(rejected).toContainEqual({
+      expect(eventsNamed('submit_rejected')).toHaveLength(0);
+      expect(rejected.accepted).toBe(false);
+      expect(rejected.submitRejected).toEqual({
         wordId: word.wordId,
         reason: 'ALREADY_CLEARED',
       });
     });
 
+    it('rejects a second direct judge call for the same cleared word without more damage', async () => {
+      const word = await startAndReachFirstSpawn();
+      const first = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
+      const hpAfterFirst = { ...service.getSession(ROOM_ID)!.hp };
+
+      const second = await submitWord({
+        roomId: ROOM_ID,
+        playerId: GUEST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'late-ai-attempt',
+      });
+
+      expect(first.accepted).toBe(true);
+      expect(second).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          reason: 'WORD_ALREADY_RESOLVED',
+          wordStateBefore: 'CLEARED',
+          wordStateAfter: 'CLEARED',
+          damage: 0,
+          gameEnded: false,
+        }),
+      );
+      expect(service.getSession(ROOM_ID)?.hp).toEqual(hpAfterFirst);
+    });
+
     it('rejects an unknown wordId', async () => {
       await service.startMatch(ROOM_ID, HOST, GUEST, server);
       await jest.advanceTimersByTimeAsync(3000);
-      service.judgeSubmit(
-        ROOM_ID,
-        HOST.userId,
-        'w_does_not_exist',
-        'foo',
-        server,
-      );
-      expect(
-        eventsNamed<SubmitRejectedPayload>('submit_rejected'),
-      ).toContainEqual({
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'w_does_not_exist',
+        text: 'foo',
+      });
+      expect(eventsNamed('submit_rejected')).toHaveLength(0);
+      expect(result.accepted).toBe(false);
+      expect(result.submitRejected).toEqual({
         wordId: 'w_does_not_exist',
         reason: 'NOT_FOUND',
       });
     });
 
+    it('rejects a missing room without mutating the input object', async () => {
+      const input: JudgeWordSubmitInput = {
+        roomId: 'missing-room',
+        playerId: HOST.userId,
+        wordId: 'w_missing',
+        text: 'foo',
+        attemptId: 'attempt-missing-room',
+      };
+      const snapshot = { ...input };
+
+      const result = await submitWord(input);
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          reason: 'ROOM_NOT_FOUND',
+          submitRejected: { wordId: 'w_missing', reason: 'NOT_FOUND' },
+        }),
+      );
+      expect(input).toEqual(snapshot);
+    });
+
+    it('rejects a non-participant before applying any damage', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      const hpBefore = { ...session.hp };
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: 'intruder-id',
+        wordId: word.wordId,
+        text: word.text,
+      });
+
+      expect(result.accepted).toBe(false);
+      expect(result.reason).toBe('PLAYER_NOT_FOUND');
+      expect(result.targetHp).toEqual(hpBefore);
+      expect(session.activeWords.has(word.wordId)).toBe(true);
+      expect(session.hp).toEqual(hpBefore);
+    });
+
     it('rejects a wrong-text submission for a valid wordId', async () => {
       const word = await startAndReachFirstSpawn();
-      service.judgeSubmit(
-        ROOM_ID,
-        HOST.userId,
-        word.wordId,
-        `${word.text}x`,
-        server,
-      );
-      expect(
-        eventsNamed<SubmitRejectedPayload>('submit_rejected'),
-      ).toContainEqual({
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: `${word.text}x`,
+      });
+      expect(eventsNamed('submit_rejected')).toHaveLength(0);
+      expect(result.accepted).toBe(false);
+      expect(result.submitRejected).toEqual({
         wordId: word.wordId,
         reason: 'WRONG_TEXT',
       });
+    });
+
+    it('rejects incorrect text without changing word state, HP, or winner state', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      const hpBefore = { ...session.hp };
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: `${word.text}x`,
+        attemptId: 'wrong-attempt',
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          reason: 'INCORRECT_TEXT',
+          wordStateBefore: 'ACTIVE',
+          wordStateAfter: 'ACTIVE',
+          damage: 0,
+          gameEnded: false,
+          winnerId: null,
+          loserId: null,
+        }),
+      );
+      expect(session.activeWords.has(word.wordId)).toBe(true);
+      expect(session.resolvedWords.has(word.wordId)).toBe(false);
+      expect(session.hp).toEqual(hpBefore);
+    });
+
+    it('rejects a submission for an already missed word', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      await jest.advanceTimersByTimeAsync(word.fallDurationMs + 200);
+      const hpAfterMiss = { ...session.hp };
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
+
+      expect(result).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          reason: 'WORD_ALREADY_RESOLVED',
+          wordStateBefore: 'MISSED',
+          wordStateAfter: 'MISSED',
+          damage: 0,
+        }),
+      );
+      expect(session.hp).toEqual(hpAfterMiss);
+    });
+
+    it('returns the first result for a duplicate attemptId without applying state twice', async () => {
+      const word = await startAndReachFirstSpawn();
+      const first = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'same-attempt',
+      });
+      const hpAfterFirst = { ...service.getSession(ROOM_ID)!.hp };
+
+      const second = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'same-attempt',
+      });
+
+      expect(first.accepted).toBe(true);
+      expect(second).toEqual(first);
+      expect(service.getSession(ROOM_ID)?.hp).toEqual(hpAfterFirst);
+    });
+
+    it('does not let two players collide when they use the same attemptId', async () => {
+      const word = await startAndReachFirstSpawn();
+      const hostWrong = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: `${word.text}x`,
+        attemptId: 'shared-attempt',
+      });
+
+      const guestCorrect = await submitWord({
+        roomId: ROOM_ID,
+        playerId: GUEST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'shared-attempt',
+      });
+
+      expect(hostWrong.accepted).toBe(false);
+      expect(guestCorrect.accepted).toBe(true);
+      expect(
+        service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
+      ).toEqual({
+        state: 'CLEARED',
+        playerId: GUEST.userId,
+        attemptId: 'shared-attempt',
+      });
+    });
+
+    it('returns the original result when the same attemptId is replayed with different wordId and text', async () => {
+      const word = await startAndReachFirstSpawn();
+
+      const first = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: `${word.text}x`,
+        attemptId: 'mutated-attempt',
+      });
+      const second = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'w_other',
+        text: 'other',
+        attemptId: 'mutated-attempt',
+      });
+
+      expect(second).toEqual(first);
+      expect(service.getSession(ROOM_ID)?.activeWords.has(word.wordId)).toBe(
+        true,
+      );
+    });
+
+    it('does not cache ROOM_NOT_FOUND attempt results', async () => {
+      const missing = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'w_missing',
+        text: 'foo',
+        attemptId: 'room-not-found-attempt',
+      });
+      expect(missing.accepted).toBe(false);
+      expect(missing.reason).toBe('ROOM_NOT_FOUND');
+
+      const word = await startAndReachFirstSpawn();
+      const accepted = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'room-not-found-attempt',
+      });
+
+      expect(accepted.accepted).toBe(true);
+      expect(accepted.wordId).toBe(word.wordId);
+    });
+
+    it('expires attempt replay records after the TTL', async () => {
+      const word = await startAndReachFirstSpawn();
+      const first = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'ttl-attempt',
+      });
+
+      jest.setSystemTime(10 * 60 * 1000);
+      const afterTtl = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'ttl-attempt',
+      });
+
+      expect(first.accepted).toBe(true);
+      expect(afterTtl.accepted).toBe(false);
+      expect(afterTtl.reason).toBe('WORD_ALREADY_RESOLVED');
+    });
+
+    it('uses the socket-free submitWord entry point while preserving broadcasts', async () => {
+      const word = await startAndReachFirstSpawn();
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: GUEST.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
+
+      expect(result.accepted).toBe(true);
+      expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(1);
+    });
+
+    it('awaits KO finalization through the socket-free submitWord entry point', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.guest = 1;
+
+      const result = await service.submitWord(
+        {
+          roomId: ROOM_ID,
+          playerId: HOST.userId,
+          wordId: word.wordId,
+          text: word.text,
+          attemptId: 'ko-attempt',
+        },
+        server,
+      );
+
+      expect(result.accepted).toBe(true);
+      expect(result.gameEnded).toBe(true);
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(1);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(mockLobbyService.broadcast).toHaveBeenCalledWith('ROOM_CLOSED', {
+        roomId: ROOM_ID,
+      });
+    });
+
+    it('awaits delayed spawn persistence before deleting acidroom during KO finalization', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      mockRedisService.set.mockClear();
+      mockRedisService.set.mockImplementation((key: string, value: string) => {
+        return new Promise<void>((resolve) => {
+          setTimeout(() => {
+            redisStore[key] = value;
+            resolve();
+          }, 10);
+        });
+      });
+      await jest.advanceTimersByTimeAsync(2000);
+      const word = eventsNamed<WordSpawnPayload>('word_spawn')[0];
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.guest = 1;
+
+      const submitPromise = service.submitWord(
+        {
+          roomId: ROOM_ID,
+          playerId: HOST.userId,
+          wordId: word.wordId,
+          text: word.text,
+          attemptId: 'ko-no-stale-persist',
+        },
+        server,
+      );
+      await jest.advanceTimersByTimeAsync(10);
+      await submitPromise;
+      await jest.advanceTimersByTimeAsync(20);
+
+      expect(mockRedisService.set).toHaveBeenCalledTimes(1);
+      expect(redisStore[`game:acidroom:${ROOM_ID}`]).toBeUndefined();
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+    });
+
+    it('replays a KO attempt after session deletion without repeating broadcasts or finalization', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.guest = 1;
+
+      const first = await service.submitWord(
+        {
+          roomId: ROOM_ID,
+          playerId: HOST.userId,
+          wordId: word.wordId,
+          text: word.text,
+          attemptId: 'ko-replay',
+        },
+        server,
+      );
+      emitSpy.mockClear();
+      jest.clearAllMocks();
+
+      const replay = await service.submitWord(
+        {
+          roomId: ROOM_ID,
+          playerId: HOST.userId,
+          wordId: 'w_mutated',
+          text: 'mutated',
+          attemptId: 'ko-replay',
+        },
+        server,
+      );
+
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(replay).toEqual(first);
+      expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(0);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+      expect(mockMatchHistoryRepository.save).not.toHaveBeenCalled();
+      expect(mockLobbyService.broadcast).not.toHaveBeenCalled();
+    });
+
+    it('retries only KO finalization after an endMatch failure on attempt replay', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.guest = 1;
+      mockRedisService.del
+        .mockRejectedValueOnce(new Error('redis down'))
+        .mockImplementation((key: string) => {
+          delete redisStore[key];
+          return Promise.resolve();
+        });
+
+      await expect(
+        service.submitWord(
+          {
+            roomId: ROOM_ID,
+            playerId: HOST.userId,
+            wordId: word.wordId,
+            text: word.text,
+            attemptId: 'ko-failed-finalization',
+          },
+          server,
+        ),
+      ).rejects.toThrow('redis down');
+      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
+      expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(1);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+
+      emitSpy.mockClear();
+      jest.clearAllMocks();
+      const replay = await service.submitWord(
+        {
+          roomId: ROOM_ID,
+          playerId: HOST.userId,
+          wordId: word.wordId,
+          text: word.text,
+          attemptId: 'ko-failed-finalization',
+        },
+        server,
+      );
+
+      expect(replay.accepted).toBe(true);
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(0);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
+
+      jest.clearAllMocks();
+      const completedReplay = await service.submitWord(
+        {
+          roomId: ROOM_ID,
+          playerId: HOST.userId,
+          wordId: word.wordId,
+          text: word.text,
+          attemptId: 'ko-failed-finalization',
+        },
+        server,
+      );
+      expect(completedReplay).toEqual(replay);
+      expect(mockMatchHistoryRepository.save).not.toHaveBeenCalled();
+      expect(mockLobbyService.broadcast).not.toHaveBeenCalled();
+    });
+
+    it('automatically retries an attemptId-free KO finalization failure without repeating broadcasts', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.guest = 1;
+      mockRedisService.del
+        .mockRejectedValueOnce(new Error('redis down'))
+        .mockImplementation((key: string) => {
+          delete redisStore[key];
+          return Promise.resolve();
+        });
+
+      await expect(
+        service.submitWord(
+          {
+            roomId: ROOM_ID,
+            playerId: HOST.userId,
+            wordId: word.wordId,
+            text: word.text,
+          },
+          server,
+        ),
+      ).rejects.toThrow('redis down');
+      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
+      expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(1);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(1);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
     });
   });
 
@@ -250,13 +864,12 @@ describe('AcidRainService', () => {
       // repeatedly clear the latest spawned word as guest until the session ends.
       let guard = 0;
       while (service.getSession(ROOM_ID) && guard < 50) {
-        service.judgeSubmit(
-          ROOM_ID,
-          GUEST.userId,
-          currentWord.wordId,
-          currentWord.text,
-          server,
-        );
+        await submitWord({
+          roomId: ROOM_ID,
+          playerId: GUEST.userId,
+          wordId: currentWord.wordId,
+          text: currentWord.text,
+        });
         if (!service.getSession(ROOM_ID)) break;
         await jest.advanceTimersByTimeAsync(2500);
         const spawns = eventsNamed<WordSpawnPayload>('word_spawn');
@@ -272,14 +885,78 @@ describe('AcidRainService', () => {
     });
 
     it('schedules a forced TIME_LIMIT end at 180s regardless of match outcome by then', async () => {
-      // An idle match (nobody submitting) always resolves via shared splash damage (§3.6)
-      // well before 180s, so this verifies the 180s timer itself fires with the right args
-      // rather than asserting on the (already-decided) match outcome.
       const endMatchSpy = jest.spyOn(service, 'endMatch');
       await service.startMatch(ROOM_ID, HOST, GUEST, server);
-      await jest.advanceTimersByTimeAsync(180_000 + 3000 + 500);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      await jest.advanceTimersByTimeAsync(180_000);
 
-      expect(endMatchSpy).toHaveBeenCalledWith(ROOM_ID, 'TIME_LIMIT', server);
+      expect(endMatchSpy).toHaveBeenCalledWith(
+        ROOM_ID,
+        'TIME_LIMIT',
+        server,
+        undefined,
+      );
+    });
+
+    it('catches TIME_LIMIT finalization failure and retries without repeating match_end', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      mockRedisService.del
+        .mockRejectedValueOnce(new Error('redis down'))
+        .mockImplementation((key: string) => {
+          delete redisStore[key];
+          return Promise.resolve();
+        });
+      emitSpy.mockClear();
+
+      await jest.advanceTimersByTimeAsync(180_000);
+      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(mockRedisService.del).toHaveBeenCalledTimes(2);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
+    });
+
+    it('retries miss KO finalization failure without repeating match_end', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      session.hp.host = 3;
+      session.hp.guest = 50;
+      const activeWord = session.activeWords.get(word.wordId)!;
+      activeWord.landAt = Date.now();
+      mockRedisService.del
+        .mockRejectedValueOnce(new Error('redis down'))
+        .mockImplementation((key: string) => {
+          delete redisStore[key];
+          return Promise.resolve();
+        });
+      emitSpy.mockClear();
+
+      await jest.advanceTimersByTimeAsync(200);
+      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
+      expect(eventsNamed<WordMissedPayload>('word_missed')).toHaveLength(1);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toEqual([
+        expect.objectContaining({ reason: 'KO', winnerId: GUEST.userId }),
+      ]);
+
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
     });
 
     it('TIME_LIMIT picks the higher-HP player as winner (tie = draw)', async () => {
@@ -298,6 +975,148 @@ describe('AcidRainService', () => {
           winnerId: GUEST.userId,
         }),
       );
+    });
+
+    it('runs match finalization side effects only once for repeated endMatch calls', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      jest.clearAllMocks();
+      emitSpy.mockClear();
+
+      await Promise.all([
+        service.endMatch(ROOM_ID, 'TIME_LIMIT', server),
+        service.endMatch(ROOM_ID, 'TIME_LIMIT', server),
+      ]);
+
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(mockRedisService.del).toHaveBeenCalledTimes(1);
+      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
+      expect(mockUserRepository.update).toHaveBeenCalledTimes(1);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+    });
+
+    it('automatically retries direct FORFEIT finalization failure without repeating completed side effects', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      mockRedisService.del
+        .mockRejectedValueOnce(new Error('redis down'))
+        .mockImplementation((key: string) => {
+          delete redisStore[key];
+          return Promise.resolve();
+        });
+      emitSpy.mockClear();
+      jest.clearAllMocks();
+
+      await expect(
+        service.endMatch(ROOM_ID, 'FORFEIT', server, GUEST.userId),
+      ).rejects.toThrow('redis down');
+      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
+      expect(eventsNamed<MatchEndPayload>('match_end')).toEqual([
+        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
+      ]);
+
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
+    });
+
+    it('commits match history and stats once when finalization is retried after partial DB failure', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.host = 30;
+      session.hp.guest = 70;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+
+      const committedHistories: Array<{
+        matchData: { reason: string; finalHp: HpPair };
+        winner: { id: string } | null;
+      }> = [];
+      const committedStats: Record<string, { wins: number; losses: number }> = {
+        [HOST.userId]: { wins: 0, losses: 0 },
+        [GUEST.userId]: { wins: 0, losses: 0 },
+      };
+      let failLoserLossOnce = true;
+      mockMatchHistoryRepository.manager.transaction.mockImplementation(
+        async (
+          work: (manager: {
+            getRepository: (target: unknown) => unknown;
+          }) => Promise<unknown>,
+        ) => {
+          const pendingHistories: typeof committedHistories = [];
+          const pendingStats: typeof committedStats = {
+            [HOST.userId]: { ...committedStats[HOST.userId] },
+            [GUEST.userId]: { ...committedStats[GUEST.userId] },
+          };
+          const txMatchHistoryRepo = {
+            create: mockMatchHistoryRepository.create,
+            save: jest.fn((history: (typeof committedHistories)[number]) => {
+              pendingHistories.push(history);
+              return Promise.resolve(history);
+            }),
+          };
+          const txUserRepo = {
+            findOneBy: mockUserRepository.findOneBy,
+            increment: jest.fn(
+              (
+                criteria: { id: string },
+                field: 'wins' | 'losses',
+                amount: number,
+              ) => {
+                if (
+                  failLoserLossOnce &&
+                  criteria.id === HOST.userId &&
+                  field === 'losses'
+                ) {
+                  failLoserLossOnce = false;
+                  return Promise.reject(new Error('loss update failed'));
+                }
+                pendingStats[criteria.id][field] += amount;
+                return Promise.resolve({ affected: 1 });
+              },
+            ),
+          };
+
+          await work({
+            getRepository: (target: unknown) =>
+              target === User ? txUserRepo : txMatchHistoryRepo,
+          });
+          committedHistories.push(...pendingHistories);
+          committedStats[HOST.userId] = pendingStats[HOST.userId];
+          committedStats[GUEST.userId] = pendingStats[GUEST.userId];
+        },
+      );
+
+      await expect(
+        service.endMatch(ROOM_ID, 'TIME_LIMIT', server),
+      ).rejects.toThrow('loss update failed');
+      await service.endMatch(ROOM_ID, 'FORFEIT', server, HOST.userId);
+
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(eventsNamed<MatchEndPayload>('match_end')[0]).toEqual(
+        expect.objectContaining({
+          reason: 'TIME_LIMIT',
+          winnerId: GUEST.userId,
+        }),
+      );
+      expect(committedHistories).toHaveLength(1);
+      expect(committedHistories[0].matchData.reason).toBe('TIME_LIMIT');
+      expect(committedHistories[0].matchData.finalHp).toEqual({
+        host: 30,
+        guest: 70,
+      });
+      expect(committedHistories[0].winner?.id).toBe(GUEST.userId);
+      expect(committedStats[GUEST.userId].wins).toBe(1);
+      expect(committedStats[HOST.userId].losses).toBe(1);
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
     });
   });
 
@@ -320,6 +1139,40 @@ describe('AcidRainService', () => {
       expect(ended).toContainEqual(
         expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
       );
+    });
+
+    it('retries FORFEIT finalization failure with the original override winner', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      mockRedisService.del
+        .mockRejectedValueOnce(new Error('redis down'))
+        .mockImplementation((key: string) => {
+          delete redisStore[key];
+          return Promise.resolve();
+        });
+      emitSpy.mockClear();
+
+      service.handleDisconnect(ROOM_ID, HOST.userId, server);
+      await jest.advanceTimersByTimeAsync(30_000);
+      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
+      expect(eventsNamed<MatchEndPayload>('match_end')).toEqual([
+        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
+      ]);
+
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      const saved = mockMatchHistoryRepository.save.mock.calls[0][0] as {
+        winner: { id: string } | null;
+        matchData: { reason: string };
+      };
+      expect(saved.winner?.id).toBe(GUEST.userId);
+      expect(saved.matchData.reason).toBe('FORFEIT');
+      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
     });
 
     it('cancels the grace timer and sends state_sync on reconnect within the grace period', async () => {
@@ -375,6 +1228,33 @@ describe('AcidRainService', () => {
       expect(saved.matchData.wordsTyped).toEqual({ host: 0, guest: 0 });
       expect(saved.matchData.durationSec).toBeGreaterThanOrEqual(0);
       expect(saved.matchData.reason).toBe('TIME_LIMIT');
+    });
+
+    it('does not complete finalization when required users are missing from history transaction', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      let missingGuestOnce = true;
+      mockUserRepository.findOneBy.mockImplementation(
+        ({ id }: { id: string }) => {
+          if (missingGuestOnce && id === GUEST.userId) {
+            missingGuestOnce = false;
+            return Promise.resolve(null);
+          }
+          return Promise.resolve({ id, nickname: id });
+        },
+      );
+
+      await expect(
+        service.endMatch(ROOM_ID, 'TIME_LIMIT', server),
+      ).rejects.toThrow('Acid Rain match participant not found');
+      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
+      expect(mockMatchHistoryRepository.save).not.toHaveBeenCalled();
+
+      await jest.advanceTimersByTimeAsync(1000);
+
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
     });
   });
 
