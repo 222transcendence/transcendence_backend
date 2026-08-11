@@ -4,7 +4,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 
 // 구 REST 방 엔드포인트(POST rooms 등)는 로비 WebSocket(/ws/lobby)으로 완전히 대체되어
 // 제거됨 — 실사용처 없음 확인됨 (WEBSOCKET_PROTOCOL.md §6.5, #78).
-@Controller('game')
+@Controller('api/game')
 @UseGuards(JwtAuthGuard)
 export class GameController {
   constructor(private readonly gameService: GameService) {}

@@ -115,6 +115,7 @@ describe('ChatService', () => {
 
       const result = await service.getHistory();
       expect(repo.find).toHaveBeenCalledWith({
+        where: { type: MessageType.NORMAL },
         order: { createdAt: 'DESC' },
         take: 50,
       });
