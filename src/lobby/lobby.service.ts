@@ -32,6 +32,12 @@ export class LobbyService {
     return undefined;
   }
 
+  clearRoomForAllClients(roomId: string): void {
+    for (const c of this.clients) {
+      if (c.roomId === roomId) c.roomId = undefined;
+    }
+  }
+
   broadcast(type: string, payload: unknown): void {
     const msg = JSON.stringify({ type, payload });
     for (const c of this.clients) {

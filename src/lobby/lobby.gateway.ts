@@ -228,6 +228,7 @@ export class LobbyGateway implements OnModuleInit {
 
         // Both players ready → GAME_START
         if (lobbyRoom.host.ready && lobbyRoom.guest && lobbyRoom.guest.ready) {
+          this.lobbyService.clearRoomForAllClients(roomId);
           this.lobbyService.broadcast('GAME_START', { roomId });
         }
         break;
