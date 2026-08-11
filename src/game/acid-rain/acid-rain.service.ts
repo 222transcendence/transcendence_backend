@@ -5,6 +5,7 @@ import { Server } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
+import { ChatGateway } from '../../chat/chat.gateway';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
@@ -34,6 +35,7 @@ export class AcidRainService implements OnModuleInit {
   constructor(
     private readonly redisService: RedisService,
     private readonly lobbyService: LobbyService,
+    private readonly chatGateway: ChatGateway,
     @InjectRepository(MatchHistory)
     private readonly matchHistoryRepo: Repository<MatchHistory>,
     @InjectRepository(User)
@@ -86,11 +88,19 @@ export class AcidRainService implements OnModuleInit {
     this.sessions.set(roomId, session);
     await this.persistSession(session);
 
-    // 두 플레이어 상태 IN_GAME으로 전환
+    // 두 플레이어 상태 IN_GAME으로 전환 (DB + Redis + 친구 실시간 알림)
     await this.userRepo.update(
       [host.userId, guest.userId],
       { status: UserStatus.IN_GAME },
     );
+    await Promise.all([
+      this.chatGateway.setUserStatus(host.userId, 'IN_GAME'),
+      this.chatGateway.setUserStatus(guest.userId, 'IN_GAME'),
+    ]);
+    await Promise.all([
+      this.chatGateway.notifyFriends(host.userId, 'IN_GAME'),
+      this.chatGateway.notifyFriends(guest.userId, 'IN_GAME'),
+    ]);
 
     // 3초 카운트다운 후 IN_PROGRESS
     const startAt = new Date(Date.now() + 3000).toISOString();
@@ -354,11 +364,19 @@ export class AcidRainService implements OnModuleInit {
     await this.redisService.getClient().del(`game:room:${roomId}`);
     this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
 
-    // 두 플레이어 상태 ONLINE으로 복원
+    // 두 플레이어 상태 ONLINE으로 복원 (DB + Redis + 친구 실시간 알림)
     await this.userRepo.update(
       [session.host.userId, session.guest.userId],
       { status: UserStatus.ONLINE },
     );
+    await Promise.all([
+      this.chatGateway.setUserStatus(session.host.userId, 'ONLINE'),
+      this.chatGateway.setUserStatus(session.guest.userId, 'ONLINE'),
+    ]);
+    await Promise.all([
+      this.chatGateway.notifyFriends(session.host.userId, 'ONLINE'),
+      this.chatGateway.notifyFriends(session.guest.userId, 'ONLINE'),
+    ]);
 
     await this.saveMatchHistory(session, winnerId, reason);
     this.logger.log(`Match ${roomId} ended — reason: ${reason}, winner: ${winnerId}`);
