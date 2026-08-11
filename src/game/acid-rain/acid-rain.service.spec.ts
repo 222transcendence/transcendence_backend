@@ -4,14 +4,23 @@ import { Server, Socket } from 'socket.io';
 import { AcidRainService } from './acid-rain.service';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
+import { ChatGateway } from '../../chat/chat.gateway';
+import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
 import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   HpPair,
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
+  JudgeWordSubmitRejected,
   WordSpawnPayload,
 } from './acid-rain.interface';
+
+function assertRejected(
+  result: JudgeWordSubmitResult,
+): asserts result is JudgeWordSubmitRejected {
+  if (result.accepted) throw new Error('expected a rejected submit result');
+}
 
 interface WordClearedPayload {
   wordId: string;
@@ -94,6 +103,15 @@ describe('AcidRainService', () => {
     broadcast: jest.fn(),
   };
 
+  const mockChatGateway = {
+    setUserStatus: jest.fn().mockResolvedValue(undefined),
+    notifyFriends: jest.fn().mockResolvedValue(undefined),
+  };
+
+  const mockWordDictionaryService = {
+    pickWord: jest.fn().mockReturnValue({ text: '테스트', keystrokes: 6 }),
+  };
+
   const mockRedisService = {
     set: jest.fn().mockImplementation((key: string, value: string) => {
       redisStore[key] = value;
@@ -168,6 +186,8 @@ describe('AcidRainService', () => {
         { provide: getRepositoryToken(User), useValue: mockUserRepository },
         { provide: RedisService, useValue: mockRedisService },
         { provide: LobbyService, useValue: mockLobbyService },
+        { provide: ChatGateway, useValue: mockChatGateway },
+        { provide: WordDictionaryService, useValue: mockWordDictionaryService },
       ],
     }).compile();
 
@@ -352,6 +372,7 @@ describe('AcidRainService', () => {
       expect(eventsNamed('word_cleared')).toHaveLength(0);
       expect(eventsNamed('submit_rejected')).toHaveLength(0);
       expect(rejected.accepted).toBe(false);
+      assertRejected(rejected);
       expect(rejected.submitRejected).toEqual({
         wordId: word.wordId,
         reason: 'ALREADY_CLEARED',
@@ -401,6 +422,7 @@ describe('AcidRainService', () => {
       });
       expect(eventsNamed('submit_rejected')).toHaveLength(0);
       expect(result.accepted).toBe(false);
+      assertRejected(result);
       expect(result.submitRejected).toEqual({
         wordId: 'w_does_not_exist',
         reason: 'NOT_FOUND',
@@ -442,6 +464,7 @@ describe('AcidRainService', () => {
       });
 
       expect(result.accepted).toBe(false);
+      assertRejected(result);
       expect(result.reason).toBe('PLAYER_NOT_FOUND');
       expect(result.targetHp).toEqual(hpBefore);
       expect(session.activeWords.has(word.wordId)).toBe(true);
@@ -458,6 +481,7 @@ describe('AcidRainService', () => {
       });
       expect(eventsNamed('submit_rejected')).toHaveLength(0);
       expect(result.accepted).toBe(false);
+      assertRejected(result);
       expect(result.submitRejected).toEqual({
         wordId: word.wordId,
         reason: 'WRONG_TEXT',
@@ -605,6 +629,7 @@ describe('AcidRainService', () => {
         attemptId: 'room-not-found-attempt',
       });
       expect(missing.accepted).toBe(false);
+      assertRejected(missing);
       expect(missing.reason).toBe('ROOM_NOT_FOUND');
 
       const word = await startAndReachFirstSpawn();
@@ -641,6 +666,7 @@ describe('AcidRainService', () => {
 
       expect(first.accepted).toBe(true);
       expect(afterTtl.accepted).toBe(false);
+      assertRejected(afterTtl);
       expect(afterTtl.reason).toBe('WORD_ALREADY_RESOLVED');
     });
 
