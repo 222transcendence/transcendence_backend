@@ -8,6 +8,11 @@ import {
 } from 'typeorm';
 import { User } from '../../user/entities/user.entity';
 
+export enum MatchMode {
+  PVP = 'PVP',
+  AI_PRACTICE = 'AI_PRACTICE',
+}
+
 @Entity('match_history')
 export class MatchHistory {
   @PrimaryGeneratedColumn('uuid')
@@ -24,6 +29,9 @@ export class MatchHistory {
   @ManyToOne(() => User, { onDelete: 'SET NULL', eager: true, nullable: true })
   @JoinColumn({ name: 'winnerId' })
   winner: User | null;
+
+  @Column({ type: 'enum', enum: MatchMode, default: MatchMode.PVP })
+  mode: MatchMode;
 
   @Column({ type: 'int' })
   roundsPlayed: number;
