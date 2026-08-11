@@ -39,7 +39,10 @@ export class UserService {
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<User> {
     const user = await this.findOne(id);
-    Object.assign(user, updateUserDto);
+    const defined = Object.fromEntries(
+      Object.entries(updateUserDto).filter(([, v]) => v !== undefined),
+    );
+    Object.assign(user, defined);
     return await this.userRepository.save(user);
   }
 
