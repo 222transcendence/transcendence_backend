@@ -6,7 +6,13 @@ import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
-import { activeGames } from '../../metrics/metrics.registry';
+import {
+  activeGames,
+  wordSpawnedTotal,
+  wordClearedTotal,
+  wordMissedTotal,
+  matchEndedTotal,
+} from '../../metrics/metrics.registry';
 import { MatchHistory, MatchMode } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
@@ -239,6 +245,7 @@ export class AcidRainService implements OnModuleInit {
         damage,
       };
       server.to(`game:${session.roomId}`).emit('word_spawn', payload);
+      wordSpawnedTotal.inc();
       void this.persistSession(session);
 
       // 다음 스폰 간격 계산 후 재귀 호출
@@ -279,6 +286,7 @@ export class AcidRainService implements OnModuleInit {
             hp: this.hpByParticipantId(session),
           };
           server.to(`game:${session.roomId}`).emit('word_missed', payload);
+          wordMissedTotal.inc();
 
           if (session.hp.host <= 0 || session.hp.guest <= 0) {
             this.safeEndMatch(session.roomId, 'KO', server);
@@ -316,6 +324,7 @@ export class AcidRainService implements OnModuleInit {
       server
         .to(`game:${result.roomId}`)
         .emit('word_cleared', result.wordCleared);
+      wordClearedTotal.inc();
       if (result.gameEnded && outcome.attemptKey) {
         await this.finalizeKoAttempt(outcome.attemptKey, result, server);
       } else if (result.gameEnded) {
@@ -642,6 +651,7 @@ export class AcidRainService implements OnModuleInit {
         durationSec: snapshot.durationSec,
       };
       server.to(`game:${roomId}`).emit('match_end', payload);
+      matchEndedTotal.inc({ reason: snapshot.reason });
       finalization.matchEndEmitted = true;
     }
 
