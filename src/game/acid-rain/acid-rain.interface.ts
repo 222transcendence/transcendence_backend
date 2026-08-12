@@ -18,10 +18,8 @@ export interface PlayerPublic {
   nickname: string;
 }
 
-export interface HpPair {
-  host: number;
-  guest: number;
-}
+/** userId → 값. 탈락자도 항상 포함되며(값 0), 존재 자체는 §6.3 state_sync/word_cleared 등에서 유지된다. */
+export type HpMap = Record<string, number>;
 
 export interface WordSpawnPayload {
   wordId: string;
@@ -33,12 +31,20 @@ export interface WordSpawnPayload {
   spawnedAt: string; // ISO8601
 }
 
+/** 매치 종료 시 확정되는 참가자별 순위. rank 1 = 우승(공동 우승 가능). */
+export interface RankedParticipant {
+  userId: string;
+  rank: number;
+}
+
 export interface AcidRainSession {
   roomId: string;
-  host: PlayerPublic;
-  guest: PlayerPublic;
-  hp: HpPair;
-  wordsTyped: { host: number; guest: number };
+  /** 매치 시작 시점에 확정되는 참가자 순서(2~4명) — 이후 인원이 늘거나 줄지 않는다. */
+  players: PlayerPublic[];
+  hp: HpMap;
+  wordsTyped: Record<string, number>;
+  /** 탈락 처리된 참가자 목록, 탈락 순서대로 push됨(동시 탈락은 같은 rank로 여러 명이 한 번에 push). */
+  eliminated: RankedParticipant[];
   activeWords: Map<string, ActiveWord>;
   startedAt: number; // Date.now()
   countdownTimer: ReturnType<typeof setTimeout> | null;
@@ -84,8 +90,29 @@ export interface JudgeWordSubmitInput {
 export interface WordClearedEventPayload {
   wordId: string;
   clearedBy: string;
+  targetUserId: string;
   damage: number;
-  targetHp: HpPair;
+  hp: HpMap;
+}
+
+export interface WordMissedEventPayload {
+  wordId: string;
+  splashDamage: number;
+  hp: HpMap;
+}
+
+export interface PlayerEliminatedEventPayload {
+  userId: string;
+  rank: number;
+  remainingPlayers: number;
+}
+
+export interface MatchEndEventPayload {
+  roomId: string;
+  winnerId: string | null;
+  reason: MatchEndReason;
+  finalHp: HpMap;
+  ranking: RankedParticipant[];
 }
 
 export interface SubmitRejectedEventPayload {
@@ -108,10 +135,15 @@ export interface JudgeWordSubmitAccepted {
   wordStateBefore: 'ACTIVE';
   wordStateAfter: 'CLEARED';
   damage: number;
-  targetHp: HpPair;
+  targetUserId: string;
+  hp: HpMap;
+  /** targetUserId가 이 판정으로 탈락했으면 순위, 아니면 undefined */
+  eliminatedRank?: number;
+  /** 탈락 처리 이후(또는 탈락이 없었다면 판정 이전과 동일한) 생존자 수 */
+  remainingPlayers: number;
+  /** 이 판정으로 매치 자체가 끝났는지(생존자 1명 이하로 수렴) */
   gameEnded: boolean;
   winnerId: string | null;
-  loserId: string | null;
   endReason: Extract<MatchEndReason, 'KO'> | null;
   wordCleared: WordClearedEventPayload;
 }
@@ -126,10 +158,9 @@ export interface JudgeWordSubmitRejected {
   wordStateBefore?: WordResolutionState;
   wordStateAfter?: WordResolutionState;
   damage: 0;
-  targetHp?: HpPair;
+  hp?: HpMap;
   gameEnded: false;
   winnerId: null;
-  loserId: null;
   endReason: null;
   submitRejected: SubmitRejectedEventPayload;
 }
