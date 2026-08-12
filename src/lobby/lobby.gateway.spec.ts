@@ -3,6 +3,7 @@ import { JwtService } from '@nestjs/jwt';
 import { UserService } from '../user/user.service';
 import { GameService } from '../game/game.service';
 import { AiPracticeService } from '../game/ai-practice.service';
+import { ChatGateway } from '../chat/chat.gateway';
 import { LobbyGateway } from './lobby.gateway';
 import { LobbyClient, LobbyService } from './lobby.service';
 import type { AiPracticeCreatedPayload } from '../game/ai-practice.interface';
@@ -259,5 +260,137 @@ describe('LobbyGateway AI practice events', () => {
       'AI_PRACTICE_REJECTED',
       { code: 'INVALID_PAYLOAD', message: 'Invalid AI practice payload' },
     );
+  });
+});
+
+describe('LobbyGateway disconnect cleanup (#145)', () => {
+  let gateway: LobbyGateway;
+  let lobbyService: LobbyService;
+  let gameService: {
+    leaveRoom: jest.Mock;
+    getWaitingRooms: jest.Mock;
+    getRoom: jest.Mock;
+  };
+  let chatGateway: { sendSystemMessage: jest.Mock };
+
+  function makeWs() {
+    const handlers: Record<string, (...args: unknown[]) => void> = {};
+    const ws = {
+      on: (event: string, cb: (...args: unknown[]) => void) => {
+        handlers[event] = cb;
+      },
+      readyState: 1,
+      send: jest.fn(),
+    };
+    return { ws, handlers };
+  }
+
+  function connect(userId: string, nickname: string) {
+    const { ws, handlers } = makeWs();
+    (
+      gateway as unknown as {
+        onConnection: (ws: unknown, userId: string, nickname: string) => void;
+      }
+    ).onConnection(ws, userId, nickname);
+    const client = lobbyService.findClientByUserId(userId);
+    if (!client) throw new Error('client not registered');
+    return { ws, handlers, client };
+  }
+
+  async function getRoom(client: LobbyClient, roomId: string) {
+    const callable = gateway as unknown as {
+      handleMessage: (
+        client: LobbyClient,
+        msg: { type: string; payload?: unknown },
+      ) => Promise<void>;
+    };
+    await callable.handleMessage(client, {
+      type: 'GET_ROOM',
+      payload: { roomId },
+    });
+  }
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    lobbyService = new LobbyService();
+    gameService = {
+      leaveRoom: jest.fn().mockResolvedValue(null),
+      getWaitingRooms: jest.fn().mockResolvedValue([]),
+      getRoom: jest.fn(),
+    };
+    chatGateway = {
+      sendSystemMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    gateway = new LobbyGateway(
+      {} as JwtService,
+      {} as UserService,
+      gameService as unknown as GameService,
+      { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+      lobbyService,
+      chatGateway as unknown as ChatGateway,
+    );
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it('cleans up the old room when the user reconnects into a different room', async () => {
+    const first = connect('user-1', 'aaa');
+    first.client.roomId = 'room-A';
+
+    first.handlers['close']();
+    const second = connect('user-1', 'aaa');
+    gameService.getRoom.mockResolvedValue({
+      id: 'room-B',
+      hostUserId: 'user-1',
+      maxPlayers: 2,
+      players: [],
+      status: 'WAITING',
+      createdAt: '2026-08-12T00:00:00.000Z',
+    });
+    await getRoom(second.client, 'room-B');
+
+    jest.advanceTimersByTime(20000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gameService.leaveRoom).toHaveBeenCalledWith('room-A', 'user-1');
+  });
+
+  it('skips cleanup when the user reconnects into the same room', async () => {
+    const first = connect('user-1', 'aaa');
+    first.client.roomId = 'room-A';
+
+    first.handlers['close']();
+    const second = connect('user-1', 'aaa');
+    gameService.getRoom.mockResolvedValue({
+      id: 'room-A',
+      hostUserId: 'user-1',
+      maxPlayers: 2,
+      players: [],
+      status: 'WAITING',
+      createdAt: '2026-08-12T00:00:00.000Z',
+    });
+    await getRoom(second.client, 'room-A');
+
+    jest.advanceTimersByTime(20000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gameService.leaveRoom).not.toHaveBeenCalled();
+  });
+
+  it('cleans up when the user does not reconnect at all', async () => {
+    const first = connect('user-1', 'aaa');
+    first.client.roomId = 'room-A';
+
+    first.handlers['close']();
+
+    jest.advanceTimersByTime(20000);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(gameService.leaveRoom).toHaveBeenCalledWith('room-A', 'user-1');
   });
 });
