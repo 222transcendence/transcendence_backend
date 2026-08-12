@@ -16,6 +16,7 @@ import { RedisService } from '../../redis/redis.service';
 import { extractWsToken } from '../../common/websocket/ws-jwt.util';
 import { websocketConnections } from '../../metrics/metrics.registry';
 import { AcidRainService } from './acid-rain.service';
+import { AiPracticeService } from '../ai-practice.service';
 import type {
   JoinRoomPayload,
   LeaveRoomPayload,
@@ -58,6 +59,7 @@ export class AcidRainGateway
     private readonly userService: UserService,
     private readonly redisService: RedisService,
     private readonly acidRainService: AcidRainService,
+    private readonly aiPracticeService: AiPracticeService,
   ) {}
 
   // ─── 연결 ─────────────────────────────────────────────────────────────────
@@ -106,7 +108,24 @@ export class AcidRainGateway
 
     // 로비 Redis에서 방 정보 조회 (lobby.service가 저장하는 키 형식 사용)
     const rawRoom = await this.redisService.get(`game:room:${roomId}`);
-    if (!rawRoom) throw new WsException('Room not found');
+    if (!rawRoom) {
+      const aiPractice =
+        await this.aiPracticeService.getAiPracticeSession(roomId);
+      if (aiPractice) {
+        const isOwner = aiPractice.ownerUserId === userId;
+        if (!isOwner) {
+          throw new WsException({
+            code: 'NOT_A_PARTICIPANT',
+            message: 'Not a participant of this room',
+          });
+        }
+        throw new WsException({
+          code: 'AI_PRACTICE_NOT_READY',
+          message: 'AI practice is not available yet',
+        });
+      }
+      throw new WsException('Room not found');
+    }
 
     const room = JSON.parse(rawRoom) as GameRoom;
 

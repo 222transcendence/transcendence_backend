@@ -3,7 +3,9 @@ import { Socket, Server } from 'socket.io';
 import { RedisService } from '../../redis/redis.service';
 import { UserService } from '../../user/user.service';
 import { AcidRainGateway } from './acid-rain.gateway';
+import { WsException } from '@nestjs/websockets';
 import { AcidRainService } from './acid-rain.service';
+import { AiPracticeService } from '../ai-practice.service';
 import {
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
@@ -16,8 +18,13 @@ describe('AcidRainGateway word_submit', () => {
       Promise<JudgeWordSubmitResult>,
       [JudgeWordSubmitInput, Server]
     >;
+    getSession: jest.Mock;
+    startMatch: jest.Mock;
   };
+  let redisService: { get: jest.Mock };
+  let aiPracticeService: { getAiPracticeSession: jest.Mock };
   let clientEmit: jest.Mock<void, [string, unknown]>;
+  let clientJoin: jest.Mock<Promise<void>, [string]>;
   let client: Socket;
   let server: Server;
 
@@ -27,20 +34,31 @@ describe('AcidRainGateway word_submit', () => {
         Promise<JudgeWordSubmitResult>,
         [JudgeWordSubmitInput, Server]
       >(),
+      getSession: jest.fn(),
+      startMatch: jest.fn(),
+    };
+    redisService = {
+      get: jest.fn(),
+    };
+    aiPracticeService = {
+      getAiPracticeSession: jest.fn(),
     };
     gateway = new AcidRainGateway(
       {} as JwtService,
       {} as UserService,
-      {} as RedisService,
+      redisService as unknown as RedisService,
       acidRainService as unknown as AcidRainService,
+      aiPracticeService as unknown as AiPracticeService,
     );
     server = {} as Server;
     gateway.server = server;
 
     clientEmit = jest.fn<void, [string, unknown]>();
+    clientJoin = jest.fn<Promise<void>, [string]>();
     client = {
-      data: { userId: 'host-id' },
+      data: { userId: 'host-id', nickname: 'host' },
       emit: clientEmit,
+      join: clientJoin,
     } as unknown as Socket;
   });
 
@@ -134,5 +152,44 @@ describe('AcidRainGateway word_submit', () => {
     ).rejects.toThrow('Invalid word_submit payload');
 
     expect(acidRainService.submitWord).not.toHaveBeenCalled();
+  });
+
+  it('recognizes AI practice metadata but does not start a match before #136', async () => {
+    redisService.get.mockResolvedValue(null);
+    aiPracticeService.getAiPracticeSession.mockResolvedValue({
+      mode: 'AI_PRACTICE',
+      roomId: 'practice-room',
+      ownerUserId: 'host-id',
+      difficulty: 'NORMAL',
+      participants: [
+        {
+          participantId: 'host-id',
+          userId: 'host-id',
+          nickname: 'host',
+          type: 'HUMAN',
+        },
+        {
+          participantId: 'ai:practice-room',
+          nickname: 'ACID BOT',
+          type: 'AI',
+          aiDifficulty: 'NORMAL',
+        },
+      ],
+      status: 'CREATED',
+      createdAt: '2026-08-12T00:00:00.000Z',
+      expiresAt: '2026-08-12T00:10:00.000Z',
+    });
+    try {
+      await gateway.handleJoinRoom(client, { roomId: 'practice-room' });
+      throw new Error('Expected join_room to be rejected');
+    } catch (err) {
+      expect(err).toBeInstanceOf(WsException);
+      expect((err as WsException).getError()).toEqual({
+        code: 'AI_PRACTICE_NOT_READY',
+        message: 'AI practice is not available yet',
+      });
+    }
+    expect(clientJoin).not.toHaveBeenCalled();
+    expect(acidRainService.startMatch).not.toHaveBeenCalled();
   });
 });
