@@ -5,10 +5,12 @@ export type AiDifficulty = 'BEGINNER' | 'NORMAL' | 'HARD';
 export type SubmitRejectedReason =
   | 'ALREADY_CLEARED'
   | 'NOT_FOUND'
-  | 'WRONG_TEXT';
+  | 'WRONG_TEXT'
+  | 'PLAYER_ELIMINATED';
 export type JudgeRejectionReason =
   | 'ROOM_NOT_FOUND'
   | 'PLAYER_NOT_FOUND'
+  | 'PLAYER_ELIMINATED'
   | 'WORD_NOT_FOUND'
   | 'WORD_ALREADY_RESOLVED'
   | 'DUPLICATE_ATTEMPT'
@@ -91,6 +93,7 @@ export interface AcidRainSession {
   status: 'COUNTDOWN' | 'IN_PROGRESS' | 'FINISHED';
   /** participantId → wordId → 타건 추적 상태 (#160) */
   typingTracker: Map<string, Map<string, WordTypingState>>;
+  stateVersion: number;
 }
 
 export interface ActiveWord extends Omit<WordSpawnPayload, 'landAt'> {
