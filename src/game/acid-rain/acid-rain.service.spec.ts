@@ -10,6 +10,8 @@ import { MatchHistory } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   HpPair,
+  HpByParticipantId,
+  ParticipantPublic,
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
   JudgeWordSubmitRejected,
@@ -26,19 +28,21 @@ interface WordClearedPayload {
   wordId: string;
   clearedBy: string;
   damage: number;
-  targetHp: HpPair;
+  targetParticipantId: string;
+  hp: HpByParticipantId;
 }
 interface WordMissedPayload {
   wordId: string;
   splashDamage: number;
-  targetHp: HpPair;
+  hp: HpByParticipantId;
 }
 interface MatchEndPayload {
   roomId: string;
   winnerId: string | null;
   reason: 'KO' | 'TIME_LIMIT' | 'FORFEIT';
-  finalHp: HpPair;
-  wordsTyped: { host: number; guest: number };
+  finalHp: HpByParticipantId;
+  ranking: { participantId: string; rank: number }[];
+  wordsTyped: Record<string, number>;
   durationSec: number;
 }
 interface OpponentDisconnectedPayload {
@@ -50,8 +54,15 @@ interface OpponentReconnectedPayload {
 }
 interface StateSyncPayload {
   roomId: string;
-  hp: HpPair;
-  activeWords: WordSpawnPayload[];
+  participants: Array<{
+    participantId: string;
+    userId?: string;
+    nickname: string;
+    type: 'HUMAN' | 'AI';
+    hp: number;
+  }>;
+  hp: HpByParticipantId;
+  activeWords: Array<WordSpawnPayload & { status: 'ACTIVE' }>;
   elapsedMs: number;
   spawnIntervalMs: number;
   now: string;
@@ -236,6 +247,30 @@ describe('AcidRainService', () => {
       expect(word.keystrokes).toBeGreaterThan(0);
       expect(word).not.toHaveProperty('tier');
     });
+
+    it('word_spawn exposes landAt and damage for frontend and AI decision making', async () => {
+      const word = await startAndReachFirstSpawn();
+
+      expect(Date.parse(word.landAt)).toBeGreaterThan(
+        Date.parse(word.spawnedAt),
+      );
+      expect(word.damage).toBe(5 + Math.ceil(word.keystrokes / 2));
+      expect(word).not.toHaveProperty('status');
+    });
+  });
+
+  describe('participant contract', () => {
+    it('can represent an AI participant without a fake User row', () => {
+      const aiParticipant: ParticipantPublic = {
+        participantId: 'ai:room-1:normal',
+        nickname: 'ACID BOT',
+        type: 'AI',
+        aiDifficulty: 'NORMAL',
+      };
+
+      expect(aiParticipant.userId).toBeUndefined();
+      expect(aiParticipant.aiDifficulty).toBe('NORMAL');
+    });
   });
 
   describe('submitWord — damage formula (GAME_DESIGN.md §3.6)', () => {
@@ -271,7 +306,11 @@ describe('AcidRainService', () => {
           wordId: word.wordId,
           clearedBy: HOST.userId,
           damage: result.damage,
-          targetHp: result.targetHp,
+          targetParticipantId: GUEST.userId,
+          hp: {
+            [HOST.userId]: result.targetHp.host,
+            [GUEST.userId]: result.targetHp.guest,
+          },
         });
       }
     });
@@ -288,8 +327,9 @@ describe('AcidRainService', () => {
       const cleared = eventsNamed<WordClearedPayload>('word_cleared');
       expect(cleared).toHaveLength(1);
       expect(cleared[0].damage).toBe(5 + Math.ceil(word.keystrokes / 2));
-      expect(cleared[0].targetHp.guest).toBe(100 - cleared[0].damage);
-      expect(cleared[0].targetHp.host).toBe(100);
+      expect(cleared[0].targetParticipantId).toBe(GUEST.userId);
+      expect(cleared[0].hp[GUEST.userId]).toBe(100 - cleared[0].damage);
+      expect(cleared[0].hp[HOST.userId]).toBe(100);
     });
 
     it('marks a correct submission as ACTIVE to CLEARED', async () => {
@@ -324,7 +364,10 @@ describe('AcidRainService', () => {
       const missed = eventsNamed<WordMissedPayload>('word_missed');
       expect(missed).toHaveLength(1);
       expect(missed[0].splashDamage).toBe(3);
-      expect(missed[0].targetHp).toEqual({ host: 97, guest: 97 });
+      expect(missed[0].hp).toEqual({
+        [HOST.userId]: 97,
+        [GUEST.userId]: 97,
+      });
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
       ).toEqual({
@@ -485,6 +528,28 @@ describe('AcidRainService', () => {
       expect(result.submitRejected).toEqual({
         wordId: word.wordId,
         reason: 'WRONG_TEXT',
+      });
+    });
+
+    it('rejects a submission after the match is no longer active', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      session.status = 'FINISHED';
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'after-finished',
+      });
+
+      expect(result.accepted).toBe(false);
+      assertRejected(result);
+      expect(result.reason).toBe('GAME_NOT_ACTIVE');
+      expect(result.submitRejected).toEqual({
+        wordId: word.wordId,
+        reason: 'NOT_FOUND',
       });
     });
 
@@ -747,12 +812,12 @@ describe('AcidRainService', () => {
       expect(service.getSession(ROOM_ID)).toBeUndefined();
     });
 
-    it('replays a KO attempt after session deletion without repeating broadcasts or finalization', async () => {
+    it('cleans attempt records after successful match finalization', async () => {
       const word = await startAndReachFirstSpawn();
       const session = service.getSession(ROOM_ID)!;
       session.hp.guest = 1;
 
-      const first = await service.submitWord(
+      await service.submitWord(
         {
           roomId: ROOM_ID,
           playerId: HOST.userId,
@@ -777,7 +842,13 @@ describe('AcidRainService', () => {
       );
 
       expect(service.getSession(ROOM_ID)).toBeUndefined();
-      expect(replay).toEqual(first);
+      expect(replay).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          reason: 'ROOM_NOT_FOUND',
+          submitRejected: { wordId: 'w_mutated', reason: 'NOT_FOUND' },
+        }),
+      );
       expect(eventsNamed<WordClearedPayload>('word_cleared')).toHaveLength(0);
       expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
       expect(mockMatchHistoryRepository.save).not.toHaveBeenCalled();
@@ -842,7 +913,13 @@ describe('AcidRainService', () => {
         },
         server,
       );
-      expect(completedReplay).toEqual(replay);
+      expect(completedReplay).toEqual(
+        expect.objectContaining({
+          accepted: false,
+          reason: 'ROOM_NOT_FOUND',
+          submitRejected: { wordId: word.wordId, reason: 'NOT_FOUND' },
+        }),
+      );
       expect(mockMatchHistoryRepository.save).not.toHaveBeenCalled();
       expect(mockLobbyService.broadcast).not.toHaveBeenCalled();
     });
@@ -999,6 +1076,11 @@ describe('AcidRainService', () => {
         expect.objectContaining({
           reason: 'TIME_LIMIT',
           winnerId: GUEST.userId,
+          finalHp: { [HOST.userId]: 40, [GUEST.userId]: 70 },
+          ranking: [
+            { participantId: GUEST.userId, rank: 1 },
+            { participantId: HOST.userId, rank: 2 },
+          ],
         }),
       );
     });
@@ -1220,10 +1302,30 @@ describe('AcidRainService', () => {
       const [syncEvent, syncPayload] = clientEmit.mock.calls[0];
       expect(syncEvent).toBe('state_sync');
       expect(syncPayload.roomId).toBe(ROOM_ID);
+      expect(syncPayload.hp).toEqual({
+        [HOST.userId]: 100,
+        [GUEST.userId]: 100,
+      });
+      expect(syncPayload.participants).toEqual([
+        expect.objectContaining({
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          type: 'HUMAN',
+        }),
+        expect.objectContaining({
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          type: 'HUMAN',
+        }),
+      ]);
       expect(syncPayload.activeWords.length).toBeGreaterThan(0);
-      expect(typeof syncPayload.activeWords[0].keystrokes).toBe('number');
+      const [activeWord] = syncPayload.activeWords;
+      expect(typeof activeWord.keystrokes).toBe('number');
+      expect(activeWord.status).toBe('ACTIVE');
+      expect(typeof activeWord.damage).toBe('number');
+      expect(typeof activeWord.landAt).toBe('string');
       // no tier leaking into the reconnect payload
-      expect(syncPayload.activeWords[0]).not.toHaveProperty('tier');
+      expect(activeWord).not.toHaveProperty('tier');
 
       // grace timer cancelled: advancing past the original 30s must NOT forfeit
       await jest.advanceTimersByTimeAsync(30_000);

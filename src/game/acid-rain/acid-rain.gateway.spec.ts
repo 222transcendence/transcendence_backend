@@ -63,7 +63,8 @@ describe('AcidRainGateway word_submit', () => {
         wordId: 'w_1',
         clearedBy: 'host-id',
         damage: 7,
-        targetHp: { host: 100, guest: 93 },
+        targetParticipantId: 'guest-id',
+        hp: { 'host-id': 100, 'guest-id': 93 },
       },
     };
     acidRainService.submitWord.mockResolvedValue(result);
@@ -120,5 +121,18 @@ describe('AcidRainGateway word_submit', () => {
       wordId: 'w_1',
       reason: 'ALREADY_CLEARED',
     });
+  });
+
+  it('rejects an invalid word_submit payload before hitting the service', async () => {
+    await expect(
+      gateway.handleWordSubmit(client, {
+        roomId: 'room-1',
+        wordId: 'w_1',
+        text: '산성비',
+        clientTs: 123,
+      } as never),
+    ).rejects.toThrow('Invalid word_submit payload');
+
+    expect(acidRainService.submitWord).not.toHaveBeenCalled();
   });
 });
