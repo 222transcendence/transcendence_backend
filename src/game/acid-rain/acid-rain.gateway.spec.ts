@@ -83,7 +83,7 @@ describe('AcidRainGateway word_submit', () => {
       wordStateBefore: 'ACTIVE',
       wordStateAfter: 'CLEARED',
       damage: 7,
-      targetHp: { host: 100, guest: 93 },
+      targetHpByParticipantId: { 'host-id': 100, 'guest-id': 93 },
       gameEnded: false,
       winnerId: null,
       loserId: null,
@@ -94,6 +94,7 @@ describe('AcidRainGateway word_submit', () => {
         damage: 7,
         targetParticipantId: 'guest-id',
         hp: { 'host-id': 100, 'guest-id': 93 },
+        targetHpByParticipantId: { 'host-id': 100, 'guest-id': 93 },
       },
     };
     acidRainService.submitWord.mockResolvedValue(result);
@@ -130,7 +131,7 @@ describe('AcidRainGateway word_submit', () => {
       wordStateBefore: 'CLEARED',
       wordStateAfter: 'CLEARED',
       damage: 0,
-      targetHp: { host: 100, guest: 93 },
+      targetHpByParticipantId: { 'host-id': 100, 'guest-id': 93 },
       gameEnded: false,
       winnerId: null,
       loserId: null,
@@ -220,12 +221,73 @@ describe('AcidRainGateway word_submit', () => {
     expect(clientJoin).toHaveBeenCalledWith('game:practice-room');
     expect(acidRainService.startMatch).toHaveBeenCalledWith(
       'practice-room',
-      { userId: 'host-id', nickname: 'host' },
-      { userId: 'ai:practice-room', nickname: 'ACID BOT' },
       server,
       expect.any(Array),
       'AI_PRACTICE',
     );
+  });
+});
+
+describe('AcidRainGateway leave_room', () => {
+  let gateway: AcidRainGateway;
+  let acidRainService: {
+    leaveMatch: jest.Mock<Promise<void>, [string, string, Server]>;
+  };
+  let redisService: { get: jest.Mock };
+  let aiPracticeService: { getAiPracticeSession: jest.Mock };
+  let chatGateway: { sendSystemMessage: jest.Mock };
+  let clientLeave: jest.Mock<Promise<void>, [string]>;
+  let client: Socket;
+  let server: Server;
+
+  beforeEach(() => {
+    acidRainService = {
+      leaveMatch: jest
+        .fn<Promise<void>, [string, string, Server]>()
+        .mockResolvedValue(undefined),
+    };
+    redisService = { get: jest.fn() };
+    aiPracticeService = { getAiPracticeSession: jest.fn() };
+    chatGateway = { sendSystemMessage: jest.fn().mockResolvedValue(undefined) };
+    gateway = new AcidRainGateway(
+      {} as JwtService,
+      {} as UserService,
+      redisService as unknown as RedisService,
+      acidRainService as unknown as AcidRainService,
+      aiPracticeService as unknown as AiPracticeService,
+      chatGateway as unknown as ChatGateway,
+      {} as GameService,
+      {} as LobbyService,
+    );
+    server = {} as Server;
+    gateway.server = server;
+
+    clientLeave = jest.fn<Promise<void>, [string]>();
+    client = {
+      data: { userId: 'host-id', nickname: 'host' },
+      leave: clientLeave,
+    } as unknown as Socket;
+  });
+
+  it('delegates to the service-level forfeit instead of guessing a single opponent (N-player safe)', async () => {
+    await gateway.handleLeaveRoom(client, { roomId: 'room-1' });
+
+    expect(acidRainService.leaveMatch).toHaveBeenCalledWith(
+      'room-1',
+      'host-id',
+      server,
+    );
+    expect(clientLeave).toHaveBeenCalledWith('game:room-1');
+    expect((client.data as { roomId?: string }).roomId).toBeUndefined();
+  });
+
+  it('rejects leave_room from an unauthenticated socket', async () => {
+    client = { data: {}, leave: clientLeave } as unknown as Socket;
+
+    await expect(
+      gateway.handleLeaveRoom(client, { roomId: 'room-1' }),
+    ).rejects.toThrow('Unauthorized');
+    expect(acidRainService.leaveMatch).not.toHaveBeenCalled();
   });
 });
 
@@ -398,7 +460,9 @@ describe('AcidRainGateway leave_spectate / disconnect (#70)', () => {
   });
 
   it('does not send a spectator leave message on disconnect when not spectating', () => {
-    client = { data: { userId: 'viewer-id', nickname: 'viewer' } } as unknown as Socket;
+    client = {
+      data: { userId: 'viewer-id', nickname: 'viewer' },
+    } as unknown as Socket;
 
     gateway.handleDisconnect(client);
 
