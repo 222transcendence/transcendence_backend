@@ -11,6 +11,7 @@ import { User } from '../../user/entities/user.entity';
 export enum MessageType {
   NORMAL = 'NORMAL',
   INVITE = 'INVITE',
+  SYSTEM = 'SYSTEM',
 }
 
 @Entity('chat_messages')
