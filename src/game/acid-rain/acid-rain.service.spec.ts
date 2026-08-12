@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Server, Socket } from 'socket.io';
 import { AcidRainService } from './acid-rain.service';
+import { AiScheduler } from './ai/ai-scheduler';
 import { ACID_RAIN_RANDOM } from './acid-rain.service';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
@@ -75,6 +76,12 @@ describe('AcidRainService', () => {
   let emitSpy: jest.Mock<void, [string, unknown]>;
   let server: Server;
   let randomMock: jest.Mock<number, []>;
+  let mockAiScheduler: {
+    registerRoom: jest.Mock;
+    onStateChange: jest.Mock;
+    invalidate: jest.Mock;
+    destroy: jest.Mock;
+  };
 
   const HOST = { userId: 'host-id', nickname: 'hostNick' };
   const GUEST = { userId: 'guest-id', nickname: 'guestNick' };
@@ -202,6 +209,12 @@ describe('AcidRainService', () => {
 
     emitSpy = jest.fn<void, [string, unknown]>();
     randomMock = jest.fn<number, []>().mockReturnValue(0);
+    mockAiScheduler = {
+      registerRoom: jest.fn(),
+      onStateChange: jest.fn(),
+      invalidate: jest.fn(),
+      destroy: jest.fn(),
+    };
     const toSpy = jest.fn().mockReturnValue({ emit: emitSpy });
     server = { to: toSpy } as unknown as Server;
 
@@ -218,6 +231,7 @@ describe('AcidRainService', () => {
         { provide: ChatGateway, useValue: mockChatGateway },
         { provide: WordDictionaryService, useValue: mockWordDictionaryService },
         { provide: ACID_RAIN_RANDOM, useValue: randomMock },
+        { provide: AiScheduler, useValue: mockAiScheduler },
       ],
     }).compile();
 
@@ -2211,6 +2225,105 @@ describe('AcidRainService', () => {
   });
 
   describe('#136 AI practice history', () => {
+    it('provides an outbound opponent_typing callback without exposing wordId', async () => {
+      let registration:
+        | {
+            emitTypingProgress: (
+              participantId: string,
+              partialText: string,
+            ) => void;
+          }
+        | undefined;
+      mockAiScheduler.registerRoom.mockImplementation((value: unknown) => {
+        registration = value as {
+          emitTypingProgress: (
+            participantId: string,
+            partialText: string,
+          ) => void;
+        };
+      });
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:room-1',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+
+      registration!.emitTypingProgress('ai:room-1', '가');
+
+      expect(emitSpy).toHaveBeenCalledWith('opponent_typing', {
+        participantId: 'ai:room-1',
+        partialText: '가',
+      });
+      expect(emitSpy.mock.calls.at(-1)?.[1]).not.toHaveProperty('wordId');
+    });
+
+    it('registers and cleans the AI scheduler through finalizeMatch', async () => {
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:room-1',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+
+      expect(mockAiScheduler.registerRoom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          roomId: ROOM_ID,
+          aiParticipantId: 'ai:room-1',
+          difficulty: 'NORMAL',
+        }),
+      );
+      await service.endMatch(ROOM_ID, 'FORFEIT', server, HOST.userId);
+      expect(mockAiScheduler.invalidate).toHaveBeenCalledWith(ROOM_ID);
+      expect(mockAiScheduler.destroy).toHaveBeenCalledWith(ROOM_ID);
+    });
+
+    it('does not advance stateVersion for rejected submit and advances for accepted clear', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      const beforeRejected = session.stateVersion;
+      const rejected = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: 'wrong',
+        attemptId: 'rejected-state-version',
+      });
+      expect(rejected.accepted).toBe(false);
+      expect(session.stateVersion).toBe(beforeRejected);
+
+      await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'accepted-state-version',
+      });
+      expect(session.stateVersion).toBeGreaterThan(beforeRejected);
+    });
+
     it('does not look up an AI participant as a User winner and skips PvP statistics', async () => {
       const aiId = 'ai:practice';
       await startParticipants(

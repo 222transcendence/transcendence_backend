@@ -45,6 +45,10 @@ import {
   WordResolutionState,
 } from './acid-rain.interface';
 import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
+import { AiScheduler } from './ai/ai-scheduler';
+import { AiExecutor } from './ai/ai-executor';
+import { toAiRuntimeWords } from './ai/active-word.mapper';
+import type { AiStateChange } from './ai/ai-execution.types';
 
 const INITIAL_HP = 100;
 const MATCH_DURATION_MS = 180_000;
@@ -129,6 +133,10 @@ export class AcidRainService implements OnModuleInit {
     @Optional()
     @Inject(ACID_RAIN_RANDOM)
     private readonly random: () => number = Math.random,
+    @Optional()
+    private readonly aiScheduler: AiScheduler = new AiScheduler(
+      new AiExecutor(),
+    ),
   ) {}
 
   async onModuleInit() {
@@ -206,8 +214,27 @@ export class AcidRainService implements OnModuleInit {
       nextEliminationOrder: 1,
       mode,
       status: 'COUNTDOWN',
+      stateVersion: 0,
     };
     this.sessions.set(roomId, session);
+    if (mode === 'AI_PRACTICE') {
+      const ai = participants.find((participant) => participant.type === 'AI');
+      if (!ai?.aiDifficulty) {
+        throw new Error('AI practice session is missing AI difficulty');
+      }
+      this.aiScheduler.registerRoom({
+        roomId,
+        aiParticipantId: ai.participantId,
+        difficulty: ai.aiDifficulty,
+        submitWord: (input) => this.submitWord(input, server),
+        emitTypingProgress: (participantId, partialText) => {
+          server.to(`game:${roomId}`).emit('opponent_typing', {
+            participantId,
+            partialText,
+          });
+        },
+      });
+    }
     activeGames.set(this.sessions.size);
     await this.persistSession(session);
 
@@ -307,6 +334,7 @@ export class AcidRainService implements OnModuleInit {
       };
       session.activeWords.set(wordId, active);
       session.occupiedLanes.add(lane);
+      session.stateVersion += 1;
 
       const payload: WordSpawnPayload = {
         wordId,
@@ -320,6 +348,7 @@ export class AcidRainService implements OnModuleInit {
       };
       server.to(`game:${session.roomId}`).emit('word_spawn', payload);
       wordSpawnedTotal.inc();
+      this.notifyAiStateChanged(session, server, 'SPAWN');
       void this.persistSession(session);
 
       // 다음 스폰 간격 계산 후 재귀 호출
@@ -383,6 +412,7 @@ export class AcidRainService implements OnModuleInit {
       if (this.aliveParticipants(session).length <= 1) {
         this.safeEndMatch(session.roomId, 'KO', server);
       } else {
+        this.notifyAiStateChanged(session, server, 'MISS');
         void this.persistSession(session);
       }
     }, 200);
@@ -419,6 +449,7 @@ export class AcidRainService implements OnModuleInit {
       } else if (result.gameEnded) {
         await this.endMatch(result.roomId, 'KO', server);
       } else if (outcome.sessionToPersist) {
+        this.notifyAiStateChanged(outcome.sessionToPersist, server, 'CLEAR');
         await this.persistSession(outcome.sessionToPersist);
       }
     }
@@ -785,6 +816,7 @@ export class AcidRainService implements OnModuleInit {
       this.matchFinalizations.set(roomId, finalization);
     }
 
+    this.aiScheduler.invalidate(roomId);
     session.status = 'FINISHED';
 
     // 루프 정리
@@ -857,6 +889,7 @@ export class AcidRainService implements OnModuleInit {
     }
 
     this.sessions.delete(roomId);
+    this.aiScheduler.destroy(roomId);
     this.deleteProcessedAttemptsForRoom(roomId);
     activeGames.set(this.sessions.size);
     this.matchFinalizations.delete(roomId);
@@ -1245,7 +1278,25 @@ export class AcidRainService implements OnModuleInit {
     session.activeWords.delete(wordId);
     session.occupiedLanes.delete(word.lane);
     session.resolvedWords.set(wordId, { state, playerId, attemptId });
+    session.stateVersion += 1;
     return true;
+  }
+
+  private notifyAiStateChanged(
+    session: AcidRainSession,
+    _server: Server,
+    event: AiStateChange['event'],
+  ): void {
+    if (session.mode !== 'AI_PRACTICE' || session.status !== 'IN_PROGRESS') {
+      return;
+    }
+    this.aiScheduler.onStateChange({
+      roomId: session.roomId,
+      stateVersion: session.stateVersion,
+      activeWords: toAiRuntimeWords(session.activeWords),
+      status: session.status,
+      event,
+    });
   }
 
   private aliveParticipants(session: AcidRainSession): ParticipantRuntime[] {
