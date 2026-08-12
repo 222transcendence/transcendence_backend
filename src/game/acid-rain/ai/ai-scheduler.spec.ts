@@ -16,7 +16,7 @@ function accepted(input: JudgeWordSubmitInput): JudgeWordSubmitResult {
     wordStateBefore: 'ACTIVE',
     wordStateAfter: 'CLEARED',
     damage: 1,
-    targetHp: { host: 100, guest: 99 },
+    targetHpByParticipantId: { ai: 100 },
     gameEnded: false,
     winnerId: null,
     loserId: null,
@@ -26,6 +26,7 @@ function accepted(input: JudgeWordSubmitInput): JudgeWordSubmitResult {
       clearedBy: input.playerId,
       damage: 1,
       hp: { ai: 100 },
+      targetHpByParticipantId: { ai: 100 },
     },
   };
 }
