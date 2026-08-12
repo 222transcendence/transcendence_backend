@@ -15,11 +15,6 @@ export type JudgeRejectionReason =
   | 'INCORRECT_TEXT'
   | 'GAME_NOT_ACTIVE';
 
-export interface PlayerPublic {
-  userId: string;
-  nickname: string;
-}
-
 export interface ParticipantPublic {
   participantId: string;
   userId?: string;
@@ -38,11 +33,6 @@ export interface ParticipantState extends ParticipantPublic {
 export interface ParticipantRuntime extends ParticipantState {
   wordsTyped: number;
   eliminatedAt?: number;
-}
-
-export interface HpPair {
-  host: number;
-  guest: number;
 }
 
 export type HpByParticipantId = Record<string, number>;
@@ -70,12 +60,8 @@ export interface ActiveWordStatePayload extends WordSpawnPayload {
 
 export interface AcidRainSession {
   roomId: string;
-  host: PlayerPublic;
-  guest: PlayerPublic;
   participants: ParticipantRuntime[];
-  hp: HpPair;
   hpByParticipantId: HpByParticipantId;
-  wordsTyped: { host: number; guest: number };
   activeWords: Map<string, ActiveWord>;
   startedAt: number; // Date.now()
   countdownTimer: ReturnType<typeof setTimeout> | null;
@@ -147,7 +133,7 @@ export interface WordClearedEventPayload {
   targetParticipantId?: string;
   damage: number;
   hp: HpByParticipantId;
-  targetHpByParticipantId?: HpByParticipantId;
+  targetHpByParticipantId: HpByParticipantId;
 }
 
 export interface WordMissedEventPayload {
@@ -202,8 +188,7 @@ export interface JudgeWordSubmitAccepted {
   wordStateBefore: 'ACTIVE';
   wordStateAfter: 'CLEARED';
   damage: number;
-  targetHp: HpPair;
-  targetHpByParticipantId?: HpByParticipantId;
+  targetHpByParticipantId: HpByParticipantId;
   gameEnded: boolean;
   winnerId: string | null;
   loserId: string | null;
@@ -221,7 +206,6 @@ export interface JudgeWordSubmitRejected {
   wordStateBefore?: WordResolutionState;
   wordStateAfter?: WordResolutionState;
   damage: 0;
-  targetHp?: HpPair;
   targetHpByParticipantId?: HpByParticipantId;
   gameEnded: false;
   winnerId: null;
