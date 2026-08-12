@@ -31,6 +31,13 @@ export interface ParticipantPublic {
 export interface ParticipantState extends ParticipantPublic {
   hp: number;
   rank?: number;
+  status?: 'ACTIVE' | 'ELIMINATED' | 'DISCONNECTED';
+  eliminationOrder?: number;
+}
+
+export interface ParticipantRuntime extends ParticipantState {
+  wordsTyped: number;
+  eliminatedAt?: number;
 }
 
 export interface HpPair {
@@ -65,7 +72,9 @@ export interface AcidRainSession {
   roomId: string;
   host: PlayerPublic;
   guest: PlayerPublic;
+  participants: ParticipantRuntime[];
   hp: HpPair;
+  hpByParticipantId: HpByParticipantId;
   wordsTyped: { host: number; guest: number };
   activeWords: Map<string, ActiveWord>;
   startedAt: number; // Date.now()
@@ -77,6 +86,8 @@ export interface AcidRainSession {
   occupiedLanes: Set<number>;
   /** wordId → 최종 단어 상태, ACTIVE가 아닌 단어의 재판정 방지용 */
   resolvedWords: Map<string, ResolvedWord>;
+  nextEliminationOrder: number;
+  mode: 'PVP' | 'AI_PRACTICE';
   status: 'COUNTDOWN' | 'IN_PROGRESS' | 'FINISHED';
 }
 
@@ -122,9 +133,10 @@ export interface JudgeWordSubmitInput {
 export interface WordClearedEventPayload {
   wordId: string;
   clearedBy: string;
-  targetParticipantId: string;
+  targetParticipantId?: string;
   damage: number;
   hp: HpByParticipantId;
+  targetHpByParticipantId?: HpByParticipantId;
 }
 
 export interface WordMissedEventPayload {
@@ -180,6 +192,7 @@ export interface JudgeWordSubmitAccepted {
   wordStateAfter: 'CLEARED';
   damage: number;
   targetHp: HpPair;
+  targetHpByParticipantId?: HpByParticipantId;
   gameEnded: boolean;
   winnerId: string | null;
   loserId: string | null;
@@ -198,6 +211,7 @@ export interface JudgeWordSubmitRejected {
   wordStateAfter?: WordResolutionState;
   damage: 0;
   targetHp?: HpPair;
+  targetHpByParticipantId?: HpByParticipantId;
   gameEnded: false;
   winnerId: null;
   loserId: null;

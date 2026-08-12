@@ -168,10 +168,44 @@ export class AcidRainGateway
             message: 'Not a participant of this room',
           });
         }
-        throw new WsException({
-          code: 'AI_PRACTICE_NOT_READY',
-          message: 'AI practice is not available yet',
-        });
+        await client.join(`game:${roomId}`);
+        (client.data as GameSocketData).roomId = roomId;
+        const existingSession = this.acidRainService.getSession(roomId);
+        if (existingSession && existingSession.status !== 'FINISHED') {
+          this.acidRainService.handleReconnect(
+            roomId,
+            userId,
+            this.server,
+            client,
+          );
+          return;
+        }
+        const human = aiPractice.participants.find(
+          (participant) => participant.type === 'HUMAN',
+        );
+        if (!human?.userId)
+          throw new WsException('AI practice human participant missing');
+        const ai = aiPractice.participants.find(
+          (participant) => participant.type === 'AI',
+        );
+        if (!ai) throw new WsException('AI practice AI participant missing');
+        this.server.to(`game:${roomId}`).emit('match_ready', {
+          roomId,
+          protocolVersion: '1.0',
+          participants: aiPractice.participants.map((participant) => ({
+            ...participant,
+            hp: 100,
+          })),
+        } satisfies MatchReadyEventPayload);
+        await this.acidRainService.startMatch(
+          roomId,
+          { userId: human.userId, nickname: human.nickname },
+          { userId: ai.participantId, nickname: ai.nickname },
+          this.server,
+          aiPractice.participants,
+          'AI_PRACTICE',
+        );
+        return;
       }
       throw new WsException('Room not found');
     }
@@ -216,24 +250,22 @@ export class AcidRainGateway
         throw new WsException('Room is not waiting');
       }
 
-      if (room.players.length !== 2) {
+      if (room.players.length < 2 || room.players.length > 4) {
         this.logger.warn(
           `join_room rejected — unsupported player count: room=${roomId} count=${room.players.length}`,
         );
-        throw new WsException(
-          'Current Acid Rain engine supports exactly 2 participants until #136',
-        );
+        throw new WsException('Acid Rain supports 2 to 4 participants');
       }
 
-      // 양쪽 소켓이 모두 룸에 입장했는지 확인
+      // 전원이 소켓 룸에 모두 입장했는지 확인
       const socketsInRoom = await this.server
         .in(`game:${roomId}`)
         .fetchSockets();
       this.logger.log(
         `join_room socket count check: room=${roomId} sockets=${socketsInRoom.length} ids=${socketsInRoom.map((s) => s.id).join(',')}`,
       );
-      if (socketsInRoom.length < 2) {
-        // 첫 번째 플레이어 — 상대방 대기
+      if (socketsInRoom.length < room.players.length) {
+        // 아직 전원이 입장하지 않음 — 나머지 대기
         this.logger.log(
           `join_room waiting for opponent: room=${roomId} user=${userId}`,
         );
@@ -269,7 +301,18 @@ export class AcidRainGateway
       );
 
       // 매치 시작 (3초 카운트다운 포함)
-      await this.acidRainService.startMatch(roomId, host, guest, this.server);
+      await this.acidRainService.startMatch(
+        roomId,
+        host,
+        guest,
+        this.server,
+        room.players.map((player) => ({
+          participantId: player.userId,
+          userId: player.userId,
+          nickname: player.nickname,
+          type: 'HUMAN' as const,
+        })),
+      );
     });
   }
 
