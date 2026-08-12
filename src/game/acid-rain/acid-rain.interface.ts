@@ -1,5 +1,7 @@
 export type MatchEndReason = 'KO' | 'TIME_LIMIT' | 'FORFEIT';
 export type WordResolutionState = 'ACTIVE' | 'CLEARED' | 'MISSED';
+export type ParticipantType = 'HUMAN' | 'AI';
+export type AiDifficulty = 'BEGINNER' | 'NORMAL' | 'HARD';
 export type SubmitRejectedReason =
   | 'ALREADY_CLEARED'
   | 'NOT_FOUND'
@@ -18,9 +20,29 @@ export interface PlayerPublic {
   nickname: string;
 }
 
+export interface ParticipantPublic {
+  participantId: string;
+  userId?: string;
+  nickname: string;
+  type: ParticipantType;
+  aiDifficulty?: AiDifficulty;
+}
+
+export interface ParticipantState extends ParticipantPublic {
+  hp: number;
+  rank?: number;
+}
+
 export interface HpPair {
   host: number;
   guest: number;
+}
+
+export type HpByParticipantId = Record<string, number>;
+
+export interface RankingEntry {
+  participantId: string;
+  rank: number;
 }
 
 export interface WordSpawnPayload {
@@ -31,6 +53,12 @@ export interface WordSpawnPayload {
   lane: number;
   fallDurationMs: number;
   spawnedAt: string; // ISO8601
+  landAt: string; // ISO8601
+  damage: number;
+}
+
+export interface ActiveWordStatePayload extends WordSpawnPayload {
+  status: 'ACTIVE';
 }
 
 export interface AcidRainSession {
@@ -52,7 +80,7 @@ export interface AcidRainSession {
   status: 'COUNTDOWN' | 'IN_PROGRESS' | 'FINISHED';
 }
 
-export interface ActiveWord extends WordSpawnPayload {
+export interface ActiveWord extends Omit<WordSpawnPayload, 'landAt'> {
   /** 바닥 도달 예정 시각 (ms epoch) */
   landAt: number;
 }
@@ -70,7 +98,7 @@ export interface WordSubmitPayload {
   wordId: string;
   text: string;
   clientTs: number;
-  attemptId?: string;
+  attemptId: string;
 }
 
 export interface JudgeWordSubmitInput {
@@ -84,13 +112,46 @@ export interface JudgeWordSubmitInput {
 export interface WordClearedEventPayload {
   wordId: string;
   clearedBy: string;
+  targetParticipantId: string;
   damage: number;
-  targetHp: HpPair;
+  hp: HpByParticipantId;
+}
+
+export interface WordMissedEventPayload {
+  wordId: string;
+  splashDamage: number;
+  hp: HpByParticipantId;
 }
 
 export interface SubmitRejectedEventPayload {
   wordId: string;
   reason: SubmitRejectedReason;
+}
+
+export interface MatchReadyEventPayload {
+  roomId: string;
+  protocolVersion: string;
+  participants: ParticipantState[];
+}
+
+export interface StateSyncEventPayload {
+  roomId: string;
+  participants: ParticipantState[];
+  hp: HpByParticipantId;
+  activeWords: ActiveWordStatePayload[];
+  elapsedMs: number;
+  spawnIntervalMs: number;
+  now: string;
+}
+
+export interface MatchEndEventPayload {
+  roomId: string;
+  winnerId: string | null;
+  reason: MatchEndReason;
+  finalHp: HpByParticipantId;
+  ranking: RankingEntry[];
+  wordsTyped: Record<string, number>;
+  durationSec: number;
 }
 
 export interface ResolvedWord {

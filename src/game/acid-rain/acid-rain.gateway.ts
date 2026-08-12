@@ -19,14 +19,25 @@ import { AcidRainService } from './acid-rain.service';
 import type {
   JoinRoomPayload,
   LeaveRoomPayload,
+  MatchReadyEventPayload,
+  ParticipantState,
   WordSubmitPayload,
 } from './acid-rain.interface';
+import { RoomStatus, type GameRoom } from '../game.interface';
 
 interface GameSocketData {
   userId?: string;
   nickname?: string;
   /** 현재 참여 중인 roomId (재접속 처리용) */
   roomId?: string;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null;
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0;
 }
 
 @WebSocketGateway({
@@ -91,20 +102,17 @@ export class AcidRainGateway
     const { userId, nickname } = client.data as GameSocketData;
     if (!userId || !nickname) throw new WsException('Unauthorized');
 
-    const { roomId } = payload;
+    const { roomId } = this.parseJoinRoomPayload(payload);
 
     // 로비 Redis에서 방 정보 조회 (lobby.service가 저장하는 키 형식 사용)
     const rawRoom = await this.redisService.get(`game:room:${roomId}`);
     if (!rawRoom) throw new WsException('Room not found');
 
-    const room = JSON.parse(rawRoom) as {
-      host: { userId: string; nickname: string };
-      guest?: { userId: string; nickname: string } | null;
-      status: string;
-    };
+    const room = JSON.parse(rawRoom) as GameRoom;
 
-    const isParticipant =
-      room.host.userId === userId || room.guest?.userId === userId;
+    const isParticipant = room.players.some(
+      (player) => player.userId === userId,
+    );
     if (!isParticipant) throw new WsException('Not a participant of this room');
 
     await client.join(`game:${roomId}`);
@@ -118,6 +126,16 @@ export class AcidRainGateway
       return;
     }
 
+    if (room.status !== RoomStatus.WAITING) {
+      throw new WsException('Room is not waiting');
+    }
+
+    if (room.players.length !== 2) {
+      throw new WsException(
+        'Current Acid Rain engine supports exactly 2 participants until #136',
+      );
+    }
+
     // 양쪽 소켓이 모두 룸에 입장했는지 확인
     const socketsInRoom = await this.server.in(`game:${roomId}`).fetchSockets();
     if (socketsInRoom.length < 2) {
@@ -125,20 +143,30 @@ export class AcidRainGateway
       return;
     }
 
-    // guest 정보 확인
-    if (!room.guest) {
-      throw new WsException('Guest not in room yet');
-    }
-
-    const host = { userId: room.host.userId, nickname: room.host.nickname };
-    const guest = { userId: room.guest.userId, nickname: room.guest.nickname };
+    const [hostPlayer, guestPlayer] = room.players;
+    const host = {
+      userId: hostPlayer.userId,
+      nickname: hostPlayer.nickname,
+    };
+    const guest = {
+      userId: guestPlayer.userId,
+      nickname: guestPlayer.nickname,
+    };
 
     // match_ready 브로드캐스트
-    this.server.to(`game:${roomId}`).emit('match_ready', {
+    const participants: ParticipantState[] = room.players.map((player) => ({
+      participantId: player.userId,
+      userId: player.userId,
+      nickname: player.nickname,
+      type: 'HUMAN',
+      hp: 100,
+    }));
+    const readyPayload: MatchReadyEventPayload = {
       roomId,
       protocolVersion: '1.0',
-      players: { host, guest },
-    });
+      participants,
+    };
+    this.server.to(`game:${roomId}`).emit('match_ready', readyPayload);
 
     // 매치 시작 (3초 카운트다운 포함)
     await this.acidRainService.startMatch(roomId, host, guest, this.server);
@@ -154,7 +182,7 @@ export class AcidRainGateway
     const { userId } = client.data as GameSocketData;
     if (!userId) throw new WsException('Unauthorized');
 
-    const { roomId } = payload;
+    const { roomId } = this.parseLeaveRoomPayload(payload);
     const session = this.acidRainService.getSession(roomId);
 
     if (session && session.status === 'IN_PROGRESS') {
@@ -183,7 +211,8 @@ export class AcidRainGateway
     const { userId } = client.data as GameSocketData;
     if (!userId) throw new WsException('Unauthorized');
 
-    const { roomId, wordId, text, attemptId } = payload;
+    const { roomId, wordId, text, attemptId } =
+      this.parseWordSubmitPayload(payload);
     const result = await this.acidRainService.submitWord(
       {
         roomId,
@@ -199,5 +228,41 @@ export class AcidRainGateway
       client.emit('submit_rejected', result.submitRejected);
       return;
     }
+  }
+
+  private parseJoinRoomPayload(payload: unknown): JoinRoomPayload {
+    if (!isRecord(payload) || !isNonEmptyString(payload.roomId)) {
+      throw new WsException('Invalid join_room payload');
+    }
+    return { roomId: payload.roomId };
+  }
+
+  private parseLeaveRoomPayload(payload: unknown): LeaveRoomPayload {
+    if (!isRecord(payload) || !isNonEmptyString(payload.roomId)) {
+      throw new WsException('Invalid leave_room payload');
+    }
+    return { roomId: payload.roomId };
+  }
+
+  private parseWordSubmitPayload(payload: unknown): WordSubmitPayload {
+    if (
+      !isRecord(payload) ||
+      !isNonEmptyString(payload.roomId) ||
+      !isNonEmptyString(payload.wordId) ||
+      !isNonEmptyString(payload.text) ||
+      typeof payload.clientTs !== 'number' ||
+      !Number.isFinite(payload.clientTs) ||
+      !isNonEmptyString(payload.attemptId)
+    ) {
+      throw new WsException('Invalid word_submit payload');
+    }
+
+    return {
+      roomId: payload.roomId,
+      wordId: payload.wordId,
+      text: payload.text,
+      clientTs: payload.clientTs,
+      attemptId: payload.attemptId,
+    };
   }
 }
