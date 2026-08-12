@@ -1,4 +1,4 @@
-import { Inject, Injectable, Optional } from '@nestjs/common';
+import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
 import type { JudgeWordSubmitInput } from '../acid-rain.interface';
 import { evaluateUtility } from './state-evaluator';
@@ -23,6 +23,8 @@ import {
   AI_PROFILE_PROVIDER,
   AI_PROFILE_FACTORY,
 } from './ai-execution.types';
+import { DEFAULT_PLAYER_SKILL } from '../../player-model';
+import type { PlayerSkillProfile } from '../../player-model';
 
 interface SchedulerState extends AiSchedulerRegistration {
   task?: AiExecutionTask;
@@ -37,6 +39,9 @@ interface SchedulerState extends AiSchedulerRegistration {
   abandonedWordIds: Set<string>;
   paused: boolean;
   destroyed: boolean;
+  profileSnapshot: PlayerSkillProfile;
+  profileLoadStarted: boolean;
+  registrationToken: string;
 }
 
 const systemClock: Clock = { now: () => Date.now() };
@@ -47,6 +52,7 @@ const systemTimer: Timer = {
 
 @Injectable()
 export class AiScheduler {
+  private readonly logger = new Logger(AiScheduler.name);
   private readonly rooms = new Map<string, SchedulerState>();
 
   constructor(
@@ -67,7 +73,7 @@ export class AiScheduler {
 
   registerRoom(registration: AiSchedulerRegistration): void {
     if (this.rooms.has(registration.roomId)) return;
-    this.rooms.set(registration.roomId, {
+    const state: SchedulerState = {
       ...registration,
       latestActiveWords: [],
       latestStatus: 'COUNTDOWN',
@@ -79,7 +85,13 @@ export class AiScheduler {
       abandonedWordIds: new Set(),
       paused: false,
       destroyed: false,
-    });
+      profileSnapshot: { ...DEFAULT_PLAYER_SKILL },
+      profileLoadStarted:
+        typeof this.profileProvider.loadSkillProfile === 'function',
+      registrationToken: randomUUID(),
+    };
+    this.rooms.set(registration.roomId, state);
+    if (state.profileLoadStarted) void this.preloadProfile(state);
   }
 
   onStateChange(change: AiStateChange): void {
@@ -139,10 +151,12 @@ export class AiScheduler {
     state.evaluationInProgress = true;
     try {
       if (state.paused || state.destroyed) return;
-      const skill = this.profileProvider.getSkillProfile({
-        roomId: state.roomId,
-        aiParticipantId: state.aiParticipantId,
-      });
+      const skill = state.profileLoadStarted
+        ? state.profileSnapshot
+        : this.profileProvider.getSkillProfile({
+            roomId: state.roomId,
+            aiParticipantId: state.aiParticipantId,
+          });
       const execution = this.profileFactory.create(skill, state.difficulty);
       const profile = this.executor.evaluatorProfile(
         execution,
@@ -200,6 +214,35 @@ export class AiScheduler {
         state.pendingChange = undefined;
         if (!state.destroyed && latest) this.reevaluate(state, latest);
       }
+    }
+  }
+
+  private async preloadProfile(state: SchedulerState): Promise<void> {
+    if (!this.profileProvider.loadSkillProfile) return;
+
+    const registrationToken = state.registrationToken;
+    const modelPlayerId = state.modelPlayerId;
+    try {
+      const profile = await this.profileProvider.loadSkillProfile({
+        roomId: state.roomId,
+        aiParticipantId: state.aiParticipantId,
+        modelPlayerId,
+        difficulty: state.difficulty,
+      });
+      if (
+        this.rooms.get(state.roomId) !== state ||
+        state.destroyed ||
+        state.registrationToken !== registrationToken ||
+        state.modelPlayerId !== modelPlayerId
+      ) {
+        return;
+      }
+      state.profileSnapshot = profile;
+    } catch (err) {
+      if (this.rooms.get(state.roomId) !== state || state.destroyed) return;
+      this.logger.error(
+        `AI profile preload failed for room=${state.roomId} modelPlayerId=${modelPlayerId}: ${String(err)}`,
+      );
     }
   }
 

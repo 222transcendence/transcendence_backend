@@ -2368,6 +2368,7 @@ describe('AcidRainService', () => {
         expect.objectContaining({
           roomId: ROOM_ID,
           aiParticipantId: 'ai:room-1',
+          modelPlayerId: HOST.userId,
           difficulty: 'NORMAL',
         }),
       );
