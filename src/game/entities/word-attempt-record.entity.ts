@@ -39,6 +39,9 @@ export class WordAttemptRecord {
   result: WordAttemptResult;
 
   @Column({ type: 'timestamptz', nullable: true })
+  wordSpawnedAt: Date | null;
+
+  @Column({ type: 'timestamptz', nullable: true })
   firstTypingAt: Date | null;
 
   @Column({ type: 'timestamptz', nullable: true })

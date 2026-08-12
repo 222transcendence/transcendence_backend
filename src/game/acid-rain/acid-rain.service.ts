@@ -449,6 +449,8 @@ export class AcidRainService implements OnModuleInit {
     const wordTracker = session.typingTracker.get(input.playerId);
     const state = wordTracker?.get(input.wordId);
     const now = new Date();
+    const spawnedAtStr = session.resolvedWords.get(input.wordId)?.spawnedAt;
+    const wordSpawnedAt = spawnedAtStr ? new Date(spawnedAtStr) : null;
     void this.performanceService
       .flushWordAttempt({
         matchId: roomId,
@@ -459,6 +461,7 @@ export class AcidRainService implements OnModuleInit {
         submittedText: input.text,
         submitReceivedAt: now,
         resolvedAt: now,
+        wordSpawnedAt,
         state: state ?? this.emptyWordTypingState(),
       })
       .catch((err: unknown) => this.logger.error('flushWordAttempt error', err));
@@ -478,11 +481,42 @@ export class AcidRainService implements OnModuleInit {
     };
   }
 
+  private flushWrongAttempt(
+    session: AcidRainSession,
+    input: JudgeWordSubmitInput,
+    wordSpawnedAtStr: string,
+    submittedText: string,
+  ): void {
+    const participant = session.participants.find(
+      p => p.participantId === input.playerId,
+    );
+    if (!participant || participant.type === 'AI') return;
+    const now = new Date();
+    const wordTracker = session.typingTracker.get(input.playerId);
+    const state = wordTracker?.get(input.wordId) ?? this.emptyWordTypingState();
+    void this.performanceService
+      .flushWordAttempt({
+        matchId: session.roomId,
+        participantId: input.playerId,
+        userId: participant.userId,
+        wordId: input.wordId,
+        result: 'WRONG',
+        submittedText,
+        submitReceivedAt: now,
+        resolvedAt: now,
+        wordSpawnedAt: wordSpawnedAtStr ? new Date(wordSpawnedAtStr) : null,
+        state,
+      })
+      .catch((err: unknown) => this.logger.error('flushWrongAttempt error', err));
+  }
+
   private flushMissedWordAttempts(
     session: AcidRainSession,
     wordId: string,
   ): void {
     const now = new Date();
+    const spawnedAtStr = session.resolvedWords.get(wordId)?.spawnedAt;
+    const wordSpawnedAt = spawnedAtStr ? new Date(spawnedAtStr) : null;
     for (const participant of session.participants) {
       if (participant.type === 'AI') continue;
       const wordTracker = session.typingTracker.get(participant.participantId);
@@ -497,6 +531,7 @@ export class AcidRainService implements OnModuleInit {
           submittedText: null,
           submitReceivedAt: null,
           resolvedAt: now,
+          wordSpawnedAt,
           state,
         })
         .catch((err: unknown) => this.logger.error('flushWordAttempt(missed) error', err));
@@ -565,6 +600,7 @@ export class AcidRainService implements OnModuleInit {
     }
 
     if (word.text !== text) {
+      this.flushWrongAttempt(session, input, word.spawnedAt, text);
       return this.recordOutcome(
         attemptKey,
         input,
@@ -1240,7 +1276,7 @@ export class AcidRainService implements OnModuleInit {
     if (!word || session.resolvedWords.has(wordId)) return false;
     session.activeWords.delete(wordId);
     session.occupiedLanes.delete(word.lane);
-    session.resolvedWords.set(wordId, { state, playerId, attemptId });
+    session.resolvedWords.set(wordId, { state, playerId, attemptId, spawnedAt: word.spawnedAt });
     return true;
   }
 

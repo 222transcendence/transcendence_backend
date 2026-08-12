@@ -15,6 +15,7 @@ interface WordResolveInput {
   submittedText: string | null;
   submitReceivedAt: Date | null;
   resolvedAt: Date;
+  wordSpawnedAt: Date | null;
   state: WordTypingState;
 }
 
@@ -41,6 +42,7 @@ export class PerformanceService {
         userId: input.userId,
         wordId: input.wordId,
         result: input.result,
+        wordSpawnedAt: input.wordSpawnedAt,
         firstTypingAt: state.firstTypingAt,
         lastTypingAt: state.lastTypingAt,
         submitReceivedAt: input.submitReceivedAt,
@@ -103,11 +105,9 @@ export class PerformanceService {
         const accuracy = totalAttempts > 0 ? correctWords / totalAttempts : null;
 
         const reactionTimes = pAttempts
-          .filter(a => a.firstTypingAt && a.resolvedAt)
-          .map(a => a.firstTypingAt!.getTime() - (a.resolvedAt.getTime() - (a.submitReceivedAt?.getTime() ?? a.resolvedAt.getTime())))
-          .filter(t => t > 0);
-
-        const wordSpawnTimes: number[] = [];
+          .filter(a => a.firstTypingAt && a.wordSpawnedAt)
+          .map(a => a.firstTypingAt!.getTime() - a.wordSpawnedAt!.getTime())
+          .filter(t => t > 0 && t < 30_000);
         const completionTimes = pAttempts
           .filter(a => a.firstTypingAt && a.submitReceivedAt)
           .map(a => a.submitReceivedAt!.getTime() - a.firstTypingAt!.getTime())

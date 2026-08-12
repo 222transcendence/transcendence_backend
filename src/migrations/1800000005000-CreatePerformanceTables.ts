@@ -30,6 +30,7 @@ export class CreatePerformanceTables1800000005000 implements MigrationInterface 
         "wordId"           varchar NOT NULL,
         "attemptNo"        integer NOT NULL DEFAULT 1,
         "result"           varchar NOT NULL,
+        "wordSpawnedAt"    TIMESTAMPTZ,
         "firstTypingAt"    TIMESTAMPTZ,
         "lastTypingAt"     TIMESTAMPTZ,
         "submitReceivedAt" TIMESTAMPTZ,

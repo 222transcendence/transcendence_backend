@@ -217,6 +217,7 @@ export interface ResolvedWord {
   state: Exclude<WordResolutionState, 'ACTIVE'>;
   playerId?: string;
   attemptId?: string;
+  spawnedAt?: string; // ISO8601, 반응시간 계산용 (#160)
 }
 
 export interface JudgeWordSubmitAccepted {
