@@ -8,6 +8,7 @@ import { LobbyService, LobbyClient } from './lobby.service';
 import { GameService } from '../game/game.service';
 import { GameRoom, RoomStatus } from '../game/game.interface';
 import { UserService } from '../user/user.service';
+import { ChatGateway } from '../chat/chat.gateway';
 import { websocketConnections } from '../metrics/metrics.registry';
 
 interface LobbyRoom {
@@ -39,7 +40,7 @@ function toLobbyRoom(room: GameRoom): LobbyRoom {
   };
 }
 
-const ROOM_LEAVE_GRACE_MS = 3000;
+const ROOM_LEAVE_GRACE_MS = 10000;
 
 @Injectable()
 export class LobbyGateway implements OnModuleInit {
@@ -56,6 +57,7 @@ export class LobbyGateway implements OnModuleInit {
     private readonly userService: UserService,
     private readonly gameService: GameService,
     private readonly lobbyService: LobbyService,
+    private readonly chatGateway: ChatGateway,
   ) {}
 
   onModuleInit() {
@@ -146,11 +148,14 @@ export class LobbyGateway implements OnModuleInit {
       if (client.roomId) {
         const roomId = client.roomId;
         const userId = client.userId;
-        // 즉시 방을 나가지 않고 짧은 유예를 둔다 — 로비→대기실 화면 전환처럼
-        // 같은 유저가 새 소켓으로 바로 재연결하는 정상적인 흐름에서 방이
-        // 삭제되는 것을 방지. 유예 내 재연결이 없으면 실제 이탈로 간주.
+        // 새 소켓이 이미 연결돼 있으면(페이지 전환 시 새 소켓이 구 소켓보다
+        // 먼저 도착하는 경쟁 조건) 타이머 없이 즉시 종료
+        if (this.lobbyService.findClientByUserId(userId)) {
+          return;
+        }
         const timer = setTimeout(() => {
           this.roomLeaveTimers.delete(userId);
+          this.chatGateway.sendSystemMessage(roomId, `${nickname} 님이 방을 나갔습니다.`);
           this.gameService.leaveRoom(roomId, userId)
             .then((updatedRoom) => {
               if (updatedRoom) {
@@ -192,6 +197,7 @@ export class LobbyGateway implements OnModuleInit {
           maxPlayers,
         );
         client.roomId = room.id;
+        this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`);
         await this.broadcastRoomList();
         this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: toLobbyRoom(room) });
         break;
@@ -199,8 +205,17 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'JOIN_ROOM': {
         const { roomId } = payload as { roomId: string };
-        const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname);
+        const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname)
+          .catch((err: Error) => {
+            if (err?.constructor?.name === 'NotFoundException') {
+              this.lobbyService.sendTo(client, 'ROOM_CLOSED', { roomId });
+              return null;
+            }
+            throw err;
+          });
+        if (!room) break;
         client.roomId = room.id;
+        this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`);
         await this.broadcastRoomList();
         this.lobbyService.broadcast('ROOM_UPDATED', { room: toLobbyRoom(room) });
         break;
@@ -210,7 +225,8 @@ export class LobbyGateway implements OnModuleInit {
         const { roomId } = payload as { roomId: string };
         const room = await this.gameService.getRoom(roomId);
         if (!room) {
-          this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: 'Room not found' });
+          // ACTION_REJECTED 대신 ROOM_CLOSED 전송: 프론트엔드가 재연결 루프 없이 로비로 이동
+          this.lobbyService.sendTo(client, 'ROOM_CLOSED', { roomId });
         } else {
           client.roomId = room.id;
           this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: toLobbyRoom(room) });
@@ -220,6 +236,7 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'LEAVE_ROOM': {
         const { roomId } = payload as { roomId: string };
+        this.chatGateway.sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`);
         const updatedRoom = await this.gameService.leaveRoom(roomId, client.userId);
         client.roomId = undefined;
         if (updatedRoom) {

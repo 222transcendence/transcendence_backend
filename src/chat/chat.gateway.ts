@@ -9,6 +9,7 @@ import {
   WsException,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
+import { randomUUID } from 'crypto';
 import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ValidationError } from 'class-validator';
 import { JwtService } from '@nestjs/jwt';
@@ -171,6 +172,17 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     } catch {
       this.logger.warn(`Failed to notify friends for user ${userId}`);
     }
+  }
+
+  sendSystemMessage(roomId: string, content: string): void {
+    this.server.emit('receive_message', {
+      id: randomUUID(),
+      content,
+      roomId,
+      type: 'SYSTEM',
+      sender: { id: 'system', nickname: 'SYSTEM', avatar: null },
+      createdAt: new Date().toISOString(),
+    });
   }
 
   private extractToken(client: Socket): string {

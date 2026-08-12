@@ -80,7 +80,7 @@ export class GameService {
       throw new BadRequestException('Room is already full');
     }
     if (room.players.some((p) => p.userId === userId)) {
-      throw new BadRequestException('Already in this room');
+      return room; // 이미 방에 있으면 idempotent하게 현재 방 상태 반환
     }
 
     const user = await this.userRepository.findOneBy({ id: userId });
