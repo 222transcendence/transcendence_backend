@@ -180,7 +180,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       content,
       roomId,
       type: 'SYSTEM',
-      sender: null,
+      sender: { id: 'system', nickname: 'SYSTEM', avatar: null },
       createdAt: new Date().toISOString(),
     });
   }
