@@ -1,6 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { In, Repository } from 'typeorm';
 import { Server } from 'socket.io';
 import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
@@ -8,17 +8,20 @@ import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
 import { activeGames } from '../../metrics/metrics.registry';
 import { MatchHistory, MatchMode } from '../entities/match-history.entity';
+import { MatchParticipant } from '../entities/match-participant.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   AcidRainSession,
   ActiveWord,
-  HpPair,
+  HpMap,
   JudgeRejectionReason,
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
   MatchEndReason,
   PlayerPublic,
+  RankedParticipant,
   SubmitRejectedReason,
+  WordClearedEventPayload,
   WordSpawnPayload,
   WordResolutionState,
 } from './acid-rain.interface';
@@ -28,6 +31,7 @@ const INITIAL_HP = 100;
 const MATCH_DURATION_MS = 180_000;
 const GRACE_PERIOD_MS = 30_000;
 const LANE_COUNT = 5;
+const SPLASH_DAMAGE = 3;
 const REDIS_TTL = 1800; // seconds
 const ATTEMPT_RESULT_TTL_MS = 5 * 60 * 1000;
 const MATCH_END_RETRY_DELAY_MS = 1000;
@@ -66,8 +70,9 @@ interface MatchFinalizationState {
 interface MatchFinalizationSnapshot {
   reason: MatchEndReason;
   winnerId: string | null;
-  finalHp: HpPair;
-  wordsTyped: { host: number; guest: number };
+  ranking: RankedParticipant[];
+  finalHp: HpMap;
+  wordsTyped: Record<string, number>;
   durationSec: number;
 }
 
@@ -130,18 +135,24 @@ export class AcidRainService implements OnModuleInit {
 
   async startMatch(
     roomId: string,
-    host: PlayerPublic,
-    guest: PlayerPublic,
+    players: PlayerPublic[],
     server: Server,
   ): Promise<void> {
     if (this.sessions.has(roomId)) return; // 이미 진행 중
 
+    const hp: HpMap = {};
+    const wordsTyped: Record<string, number> = {};
+    for (const p of players) {
+      hp[p.userId] = INITIAL_HP;
+      wordsTyped[p.userId] = 0;
+    }
+
     const session: AcidRainSession = {
       roomId,
-      host,
-      guest,
-      hp: { host: INITIAL_HP, guest: INITIAL_HP },
-      wordsTyped: { host: 0, guest: 0 },
+      players,
+      hp,
+      wordsTyped,
+      eliminated: [],
       activeWords: new Map(),
       startedAt: Date.now(),
       countdownTimer: null,
@@ -156,19 +167,15 @@ export class AcidRainService implements OnModuleInit {
     activeGames.set(this.sessions.size);
     await this.persistSession(session);
 
-    // 두 플레이어 상태 IN_GAME으로 전환 (DB + Redis + 친구 실시간 알림)
-    await this.userRepo.update(
-      [host.userId, guest.userId],
-      { status: UserStatus.IN_GAME },
+    // 참가자 전원 상태 IN_GAME으로 전환 (DB + Redis + 친구 실시간 알림)
+    const userIds = players.map((p) => p.userId);
+    await this.userRepo.update(userIds, { status: UserStatus.IN_GAME });
+    await Promise.all(
+      userIds.map((id) => this.chatGateway.setUserStatus(id, 'IN_GAME')),
     );
-    await Promise.all([
-      this.chatGateway.setUserStatus(host.userId, 'IN_GAME'),
-      this.chatGateway.setUserStatus(guest.userId, 'IN_GAME'),
-    ]);
-    await Promise.all([
-      this.chatGateway.notifyFriends(host.userId, 'IN_GAME'),
-      this.chatGateway.notifyFriends(guest.userId, 'IN_GAME'),
-    ]);
+    await Promise.all(
+      userIds.map((id) => this.chatGateway.notifyFriends(id, 'IN_GAME')),
+    );
 
     // 3초 카운트다운 후 IN_PROGRESS
     const startAt = new Date(Date.now() + 3000).toISOString();
@@ -258,17 +265,41 @@ export class AcidRainService implements OnModuleInit {
           session.occupiedLanes.delete(word.lane);
           session.resolvedWords.set(wordId, { state: 'MISSED' });
 
-          const SPLASH = 3;
-          session.hp.host = Math.max(0, session.hp.host - SPLASH);
-          session.hp.guest = Math.max(0, session.hp.guest - SPLASH);
+          // 스플래시는 그 시점 생존자 전원에게 적용된다 (탈락자 제외, GAME_DESIGN §3.6)
+          const eliminatedIds = new Set(
+            session.eliminated.map((e) => e.userId),
+          );
+          const survivorsBefore = session.players.filter(
+            (p) => !eliminatedIds.has(p.userId),
+          );
+          for (const p of survivorsBefore) {
+            session.hp[p.userId] = Math.max(
+              0,
+              session.hp[p.userId] - SPLASH_DAMAGE,
+            );
+          }
 
           server.to(`game:${session.roomId}`).emit('word_missed', {
             wordId,
-            splashDamage: SPLASH,
-            targetHp: { ...session.hp },
+            splashDamage: SPLASH_DAMAGE,
+            hp: { ...session.hp },
           });
 
-          if (session.hp.host <= 0 || session.hp.guest <= 0) {
+          const newlyDead = survivorsBefore
+            .filter((p) => session.hp[p.userId] <= 0)
+            .map((p) => p.userId);
+          const eliminatedEntries = this.eliminateBatch(session, newlyDead);
+          const remainingPlayers =
+            session.players.length - session.eliminated.length;
+          for (const entry of eliminatedEntries) {
+            server.to(`game:${session.roomId}`).emit('player_eliminated', {
+              userId: entry.userId,
+              rank: entry.rank,
+              remainingPlayers,
+            });
+          }
+
+          if (remainingPlayers <= 1) {
             this.safeEndMatch(session.roomId, 'KO', server);
             return;
           }
@@ -304,6 +335,15 @@ export class AcidRainService implements OnModuleInit {
       server
         .to(`game:${result.roomId}`)
         .emit('word_cleared', result.wordCleared);
+
+      if (result.eliminatedRank !== undefined) {
+        server.to(`game:${result.roomId}`).emit('player_eliminated', {
+          userId: result.targetUserId,
+          rank: result.eliminatedRank,
+          remainingPlayers: result.remainingPlayers,
+        });
+      }
+
       if (result.gameEnded && outcome.attemptKey) {
         await this.finalizeKoAttempt(outcome.attemptKey, result, server);
       } else if (result.gameEnded) {
@@ -357,6 +397,14 @@ export class AcidRainService implements OnModuleInit {
       );
     }
 
+    if (session.eliminated.some((e) => e.userId === playerId)) {
+      return this.recordOutcome(
+        attemptKey,
+        input,
+        this.rejected(input, 'PLAYER_ELIMINATED', undefined, session),
+      );
+    }
+
     const resolved = session.resolvedWords.get(wordId);
     if (resolved) {
       return this.recordOutcome(
@@ -390,27 +438,39 @@ export class AcidRainService implements OnModuleInit {
       playerId,
       attemptId,
     });
+    session.wordsTyped[playerId] = (session.wordsTyped[playerId] ?? 0) + 1;
 
-    const isHost = session.host.userId === playerId;
-    if (isHost) session.wordsTyped.host++;
-    else session.wordsTyped.guest++;
+    // 지운 사람을 제외한 생존자 중 서버가 무작위로 1인을 골라 데미지를 준다 (GAME_DESIGN §3.6)
+    const eliminatedIds = new Set(session.eliminated.map((e) => e.userId));
+    const candidates = session.players
+      .filter((p) => p.userId !== playerId && !eliminatedIds.has(p.userId))
+      .map((p) => p.userId);
+    const targetUserId =
+      candidates[Math.floor(Math.random() * candidates.length)];
 
     const damage = 5 + Math.ceil(word.keystrokes / 2);
-    if (isHost) session.hp.guest = Math.max(0, session.hp.guest - damage);
-    else session.hp.host = Math.max(0, session.hp.host - damage);
+    session.hp[targetUserId] = Math.max(
+      0,
+      session.hp[targetUserId] - damage,
+    );
 
-    const gameEnded = session.hp.host <= 0 || session.hp.guest <= 0;
-    const winnerId = gameEnded ? this.determineWinner(session) : null;
-    const loserId = winnerId
-      ? winnerId === session.host.userId
-        ? session.guest.userId
-        : session.host.userId
-      : null;
-    const wordCleared = {
+    let eliminatedRank: number | undefined;
+    if (session.hp[targetUserId] <= 0) {
+      const [entry] = this.eliminateBatch(session, [targetUserId]);
+      eliminatedRank = entry.rank;
+    }
+
+    const remainingPlayers =
+      session.players.length - session.eliminated.length;
+    const gameEnded = remainingPlayers <= 1;
+    const winnerId = gameEnded ? this.findSoleSurvivor(session) : null;
+
+    const wordCleared: WordClearedEventPayload = {
       wordId,
       clearedBy: playerId,
+      targetUserId,
       damage,
-      targetHp: { ...session.hp },
+      hp: { ...session.hp },
     };
 
     const result: JudgeWordSubmitResult = {
@@ -422,14 +482,84 @@ export class AcidRainService implements OnModuleInit {
       wordStateBefore: 'ACTIVE',
       wordStateAfter: 'CLEARED',
       damage,
-      targetHp: { ...session.hp },
+      targetUserId,
+      hp: { ...session.hp },
+      eliminatedRank,
+      remainingPlayers,
       gameEnded,
       winnerId,
-      loserId,
       endReason: gameEnded ? 'KO' : null,
       wordCleared,
     };
     return this.recordOutcome(attemptKey, input, result, session);
+  }
+
+  // ─── 탈락 처리 (정타/스플래시/연결끊김/퇴장 공통) ─────────────────────────
+
+  /**
+   * userIds 전원을 한 번에 탈락 처리하고 같은 순위(rank)를 부여한다.
+   * 이미 탈락 처리된 userId는 건너뛴다. 반환값은 새로 탈락한 항목만 포함한다.
+   */
+  private eliminateBatch(
+    session: AcidRainSession,
+    userIds: string[],
+  ): RankedParticipant[] {
+    const alreadyEliminated = new Set(
+      session.eliminated.map((e) => e.userId),
+    );
+    const freshIds = userIds.filter((id) => !alreadyEliminated.has(id));
+    if (freshIds.length === 0) return [];
+
+    const survivorsBefore = session.players.length - session.eliminated.length;
+    const remainingAfter = survivorsBefore - freshIds.length;
+    const rank = remainingAfter + 1;
+    const entries = freshIds.map((userId) => ({ userId, rank }));
+    session.eliminated.push(...entries);
+    return entries;
+  }
+
+  private findSoleSurvivor(session: AcidRainSession): string | null {
+    const eliminatedIds = new Set(session.eliminated.map((e) => e.userId));
+    const survivors = session.players.filter(
+      (p) => !eliminatedIds.has(p.userId),
+    );
+    return survivors.length === 1 ? survivors[0].userId : null;
+  }
+
+  /** 연결 끊김 유예 만료 또는 명시적 퇴장으로 즉시 탈락 처리한다. */
+  private async eliminateParticipant(
+    session: AcidRainSession,
+    userId: string,
+    server: Server,
+  ): Promise<void> {
+    const entries = this.eliminateBatch(session, [userId]);
+    if (entries.length === 0) return;
+
+    session.hp[userId] = 0;
+    const remainingPlayers =
+      session.players.length - session.eliminated.length;
+    server.to(`game:${session.roomId}`).emit('player_eliminated', {
+      userId,
+      rank: entries[0].rank,
+      remainingPlayers,
+    });
+
+    if (remainingPlayers <= 1) {
+      await this.endMatch(session.roomId, 'FORFEIT', server);
+    } else {
+      await this.persistSession(session);
+    }
+  }
+
+  /** leave_room으로 명시적 퇴장 시 즉시 탈락 처리 (유예 없음). */
+  async eliminateOnLeave(
+    roomId: string,
+    userId: string,
+    server: Server,
+  ): Promise<void> {
+    const session = this.sessions.get(roomId);
+    if (!session || session.status !== 'IN_PROGRESS') return;
+    await this.eliminateParticipant(session, userId, server);
   }
 
   // ─── 재접속 처리 ──────────────────────────────────────────────────────────
@@ -438,11 +568,6 @@ export class AcidRainService implements OnModuleInit {
     const session = this.sessions.get(roomId);
     if (!session || session.status === 'FINISHED') return;
 
-    const opponentId =
-      session.host.userId === userId
-        ? session.guest.userId
-        : session.host.userId;
-
     server.to(`game:${roomId}`).emit('opponent_disconnected', {
       userId,
       graceMs: GRACE_PERIOD_MS,
@@ -450,8 +575,13 @@ export class AcidRainService implements OnModuleInit {
 
     const timer = setTimeout(() => {
       this.graceTimers.delete(roomId);
-      const winnerId = opponentId;
-      this.safeEndMatch(roomId, 'FORFEIT', server, winnerId);
+      const current = this.sessions.get(roomId);
+      if (!current || current.status === 'FINISHED') return;
+      void this.eliminateParticipant(current, userId, server).catch(
+        (err: unknown) => {
+          this.logger.error('Failed to process disconnect elimination', err);
+        },
+      );
     }, GRACE_PERIOD_MS);
 
     this.graceTimers.set(roomId, timer);
@@ -506,7 +636,6 @@ export class AcidRainService implements OnModuleInit {
     roomId: string,
     reason: MatchEndReason,
     server: Server,
-    overrideWinnerId?: string,
   ): Promise<void> {
     const existing = this.endingMatches.get(roomId);
     if (existing) return existing;
@@ -514,19 +643,13 @@ export class AcidRainService implements OnModuleInit {
     const session = this.sessions.get(roomId);
     if (!session) return;
 
-    const promise = this.finalizeMatch(
-      session,
-      roomId,
-      reason,
-      server,
-      overrideWinnerId,
-    );
+    const promise = this.finalizeMatch(session, roomId, reason, server);
     this.endingMatches.set(roomId, promise);
     try {
       await promise;
     } catch (err) {
       this.logger.error('Failed to finalize Acid Rain match', err);
-      this.scheduleEndMatchRetry(roomId, reason, server, overrideWinnerId);
+      this.scheduleEndMatchRetry(roomId, reason, server);
       throw err;
     } finally {
       this.endingMatches.delete(roomId);
@@ -537,9 +660,8 @@ export class AcidRainService implements OnModuleInit {
     roomId: string,
     reason: MatchEndReason,
     server: Server,
-    overrideWinnerId?: string,
   ): void {
-    void this.endMatch(roomId, reason, server, overrideWinnerId).catch(() => {
+    void this.endMatch(roomId, reason, server).catch(() => {
       // endMatch logs and schedules retry; timer callers intentionally swallow.
     });
   }
@@ -548,7 +670,6 @@ export class AcidRainService implements OnModuleInit {
     roomId: string,
     reason: MatchEndReason,
     server: Server,
-    overrideWinnerId?: string,
   ): void {
     if (!this.sessions.has(roomId) || this.matchEndRetryTimers.has(roomId)) {
       return;
@@ -556,7 +677,7 @@ export class AcidRainService implements OnModuleInit {
 
     const timer = setTimeout(() => {
       this.matchEndRetryTimers.delete(roomId);
-      this.safeEndMatch(roomId, reason, server, overrideWinnerId);
+      this.safeEndMatch(roomId, reason, server);
     }, MATCH_END_RETRY_DELAY_MS);
     timer.unref?.();
     this.matchEndRetryTimers.set(roomId, timer);
@@ -567,16 +688,11 @@ export class AcidRainService implements OnModuleInit {
     roomId: string,
     reason: MatchEndReason,
     server: Server,
-    overrideWinnerId?: string,
   ): Promise<void> {
     let finalization = this.matchFinalizations.get(roomId);
     if (!finalization) {
       finalization = {
-        snapshot: this.createFinalizationSnapshot(
-          session,
-          reason,
-          overrideWinnerId,
-        ),
+        snapshot: this.createFinalizationSnapshot(session, reason),
         matchEndEmitted: false,
         acidRoomDeleted: false,
         lobbyRoomDeleted: false,
@@ -607,8 +723,7 @@ export class AcidRainService implements OnModuleInit {
         winnerId: snapshot.winnerId,
         reason: snapshot.reason,
         finalHp: { ...snapshot.finalHp },
-        wordsTyped: { ...snapshot.wordsTyped },
-        durationSec: snapshot.durationSec,
+        ranking: snapshot.ranking.map((r) => ({ ...r })),
       });
       finalization.matchEndEmitted = true;
     }
@@ -627,20 +742,16 @@ export class AcidRainService implements OnModuleInit {
       finalization.roomClosedBroadcast = true;
     }
 
-    // 두 플레이어 상태 ONLINE으로 복원 (DB + Redis + 친구 실시간 알림)
+    // 참가자 전원 상태 ONLINE으로 복원 (DB + Redis + 친구 실시간 알림)
     if (!finalization.usersOnline) {
-      await this.userRepo.update(
-        [session.host.userId, session.guest.userId],
-        { status: UserStatus.ONLINE },
+      const userIds = session.players.map((p) => p.userId);
+      await this.userRepo.update(userIds, { status: UserStatus.ONLINE });
+      await Promise.all(
+        userIds.map((id) => this.chatGateway.setUserStatus(id, 'ONLINE')),
       );
-      await Promise.all([
-        this.chatGateway.setUserStatus(session.host.userId, 'ONLINE'),
-        this.chatGateway.setUserStatus(session.guest.userId, 'ONLINE'),
-      ]);
-      await Promise.all([
-        this.chatGateway.notifyFriends(session.host.userId, 'ONLINE'),
-        this.chatGateway.notifyFriends(session.guest.userId, 'ONLINE'),
-      ]);
+      await Promise.all(
+        userIds.map((id) => this.chatGateway.notifyFriends(id, 'ONLINE')),
+      );
       finalization.usersOnline = true;
     }
 
@@ -657,22 +768,65 @@ export class AcidRainService implements OnModuleInit {
     );
   }
 
+  /**
+   * 탈락자는 session.eliminated에 이미 순위가 매겨져 있다. 남은 생존자는
+   * TIME_LIMIT이면 HP 내림차순(동점자는 같은 순위 공유), KO/FORFEIT이면
+   * 생존자가 정확히 1명이거나(그 사람이 1위) 0명(동시 전멸 → 전원 무승부,
+   * §3.1/설계 결정)이다.
+   */
+  private computeRanking(session: AcidRainSession): {
+    winnerId: string | null;
+    ranking: RankedParticipant[];
+  } {
+    const eliminatedIds = new Set(session.eliminated.map((e) => e.userId));
+    const survivors = session.players.filter(
+      (p) => !eliminatedIds.has(p.userId),
+    );
+    const ranking: RankedParticipant[] = [...session.eliminated];
+
+    if (survivors.length === 0) {
+      return { winnerId: null, ranking: this.sortRanking(ranking) };
+    }
+
+    if (survivors.length === 1) {
+      ranking.push({ userId: survivors[0].userId, rank: 1 });
+      return {
+        winnerId: survivors[0].userId,
+        ranking: this.sortRanking(ranking),
+      };
+    }
+
+    const sorted = [...survivors].sort(
+      (a, b) => session.hp[b.userId] - session.hp[a.userId],
+    );
+    let rank = 1;
+    for (let i = 0; i < sorted.length; i++) {
+      if (i > 0 && session.hp[sorted[i].userId] < session.hp[sorted[i - 1].userId]) {
+        rank = i + 1;
+      }
+      ranking.push({ userId: sorted[i].userId, rank });
+    }
+    const topRankCount = sorted.filter(
+      (p) => session.hp[p.userId] === session.hp[sorted[0].userId],
+    ).length;
+    const winnerId = topRankCount === 1 ? sorted[0].userId : null;
+
+    return { winnerId, ranking: this.sortRanking(ranking) };
+  }
+
+  private sortRanking(ranking: RankedParticipant[]): RankedParticipant[] {
+    return [...ranking].sort((a, b) => a.rank - b.rank);
+  }
+
   private createFinalizationSnapshot(
     session: AcidRainSession,
     reason: MatchEndReason,
-    overrideWinnerId?: string,
   ): MatchFinalizationSnapshot {
-    let winnerId: string | null = overrideWinnerId ?? null;
-    if (!winnerId && (reason === 'KO' || reason === 'TIME_LIMIT')) {
-      if (session.hp.host > session.hp.guest) winnerId = session.host.userId;
-      else if (session.hp.guest > session.hp.host)
-        winnerId = session.guest.userId;
-      // 동률 무승부 → null
-    }
-
+    const { winnerId, ranking } = this.computeRanking(session);
     return {
       reason,
       winnerId,
+      ranking,
       finalHp: { ...session.hp },
       wordsTyped: { ...session.wordsTyped },
       durationSec: Math.round((Date.now() - session.startedAt) / 1000),
@@ -695,10 +849,10 @@ export class AcidRainService implements OnModuleInit {
 
         const serializable = {
           roomId: session.roomId,
-          host: session.host,
-          guest: session.guest,
+          players: session.players,
           hp: session.hp,
           wordsTyped: session.wordsTyped,
+          eliminated: session.eliminated,
           startedAt: session.startedAt,
           status: session.status,
           activeWords: Array.from(session.activeWords.entries()),
@@ -740,58 +894,83 @@ export class AcidRainService implements OnModuleInit {
       await this.matchHistoryRepo.manager.transaction(async (manager) => {
         const userRepo = manager.getRepository(User);
         const matchHistoryRepo = manager.getRepository(MatchHistory);
-        const [hostUser, guestUser] = await Promise.all([
-          userRepo.findOneBy({ id: session.host.userId }),
-          userRepo.findOneBy({ id: session.guest.userId }),
-        ]);
-        if (!hostUser || !guestUser) {
+        const participantRepo = manager.getRepository(MatchParticipant);
+
+        const playerIds = session.players.map((p) => p.userId);
+        const users = await userRepo.findBy({ id: In(playerIds) });
+        if (users.length !== playerIds.length) {
           throw new Error('Acid Rain match participant not found');
         }
+        const userById = new Map(users.map((u) => [u.id, u]));
 
         const winnerUser = snapshot.winnerId
-          ? await userRepo.findOneBy({ id: snapshot.winnerId })
+          ? userById.get(snapshot.winnerId)
           : null;
         if (snapshot.winnerId && !winnerUser) {
           throw new Error('Acid Rain match winner not found');
         }
 
         const history = matchHistoryRepo.create({
-          hostUser,
-          guestUser,
-          winner: winnerUser,
+          winner: winnerUser ?? null,
           mode,
           roundsPlayed: 1,
           matchData: {
-            finalHp: { ...snapshot.finalHp },
-            wordsTyped: { ...snapshot.wordsTyped },
+            participants: snapshot.ranking.map((r) => ({
+              userId: r.userId,
+              finalHp: snapshot.finalHp[r.userId] ?? 0,
+              rank: r.rank,
+              wordsTyped: snapshot.wordsTyped[r.userId] ?? 0,
+            })),
             durationSec: snapshot.durationSec,
             reason: snapshot.reason,
           },
+          participants: snapshot.ranking.map((r) =>
+            participantRepo.create({
+              user: userById.get(r.userId),
+              finalHp: snapshot.finalHp[r.userId] ?? 0,
+              rank: r.rank,
+            }),
+          ),
         });
         await matchHistoryRepo.save(history);
 
-        // PVP만 wins/losses에 반영 — AI 연습은 랭킹에 영향 없음 (#104)
+        // PVP만 wins/losses/draws에 반영 — AI 연습은 랭킹에 영향 없음 (#104)
         if (mode !== MatchMode.PVP) return;
 
-        if (snapshot.winnerId) {
-          const loserId =
-            snapshot.winnerId === session.host.userId
-              ? session.guest.userId
-              : session.host.userId;
-          const [winnerUpdate, loserUpdate] = await Promise.all([
-            userRepo.increment({ id: snapshot.winnerId }, 'wins', 1),
-            userRepo.increment({ id: loserId }, 'losses', 1),
-          ]);
+        const topRankCount = snapshot.ranking.filter(
+          (r) => r.rank === 1,
+        ).length;
+
+        if (snapshot.winnerId && topRankCount === 1) {
+          const loserIds = playerIds.filter((id) => id !== snapshot.winnerId);
+          const winnerUpdate = await userRepo.increment(
+            { id: snapshot.winnerId },
+            'wins',
+            1,
+          );
           this.assertStatsUpdated(winnerUpdate, 'winner wins');
-          this.assertStatsUpdated(loserUpdate, 'loser losses');
+          await Promise.all(
+            loserIds.map(async (loserId) => {
+              const loserUpdate = await userRepo.increment(
+                { id: loserId },
+                'losses',
+                1,
+              );
+              this.assertStatsUpdated(loserUpdate, `loser losses (${loserId})`);
+            }),
+          );
         } else {
-          // 무승부: 둘 다 losses 증가
-          const [hostUpdate, guestUpdate] = await Promise.all([
-            userRepo.increment({ id: session.host.userId }, 'losses', 1),
-            userRepo.increment({ id: session.guest.userId }, 'losses', 1),
-          ]);
-          this.assertStatsUpdated(hostUpdate, 'host losses');
-          this.assertStatsUpdated(guestUpdate, 'guest losses');
+          // 무승부(동시 전멸 포함 공동 1위) — 승패 대신 draws 증가
+          await Promise.all(
+            playerIds.map(async (userId) => {
+              const drawUpdate = await userRepo.increment(
+                { id: userId },
+                'draws',
+                1,
+              );
+              this.assertStatsUpdated(drawUpdate, `draw (${userId})`);
+            }),
+          );
         }
       });
     } catch (err) {
@@ -827,10 +1006,9 @@ export class AcidRainService implements OnModuleInit {
       wordStateBefore: wordState,
       wordStateAfter: wordState,
       damage: 0,
-      targetHp: session ? { ...session.hp } : undefined,
+      hp: session ? { ...session.hp } : undefined,
       gameEnded: false,
       winnerId: null,
-      loserId: null,
       endReason: null,
       submitRejected: {
         wordId: input.wordId,
@@ -910,25 +1088,23 @@ export class AcidRainService implements OnModuleInit {
     if (result.accepted) {
       return {
         ...result,
-        targetHp: { ...result.targetHp },
+        hp: { ...result.hp },
         wordCleared: {
           ...result.wordCleared,
-          targetHp: { ...result.wordCleared.targetHp },
+          hp: { ...result.wordCleared.hp },
         },
       };
     }
 
     return {
       ...result,
-      targetHp: result.targetHp ? { ...result.targetHp } : undefined,
+      hp: result.hp ? { ...result.hp } : undefined,
       submitRejected: { ...result.submitRejected },
     };
   }
 
   private isParticipant(session: AcidRainSession, playerId: string): boolean {
-    return (
-      session.host.userId === playerId || session.guest.userId === playerId
-    );
+    return session.players.some((p) => p.userId === playerId);
   }
 
   private wordState(
@@ -950,11 +1126,5 @@ export class AcidRainService implements OnModuleInit {
       return 'ALREADY_CLEARED';
     }
     return 'NOT_FOUND';
-  }
-
-  private determineWinner(session: AcidRainSession): string | null {
-    if (session.hp.host > session.hp.guest) return session.host.userId;
-    if (session.hp.guest > session.hp.host) return session.guest.userId;
-    return null;
   }
 }

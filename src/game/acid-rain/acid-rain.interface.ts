@@ -7,6 +7,7 @@ export type SubmitRejectedReason =
 export type JudgeRejectionReason =
   | 'ROOM_NOT_FOUND'
   | 'PLAYER_NOT_FOUND'
+  | 'PLAYER_ELIMINATED'
   | 'WORD_NOT_FOUND'
   | 'WORD_ALREADY_RESOLVED'
   | 'DUPLICATE_ATTEMPT'
