@@ -17,11 +17,14 @@ import { extractWsToken } from '../../common/websocket/ws-jwt.util';
 import { websocketConnections } from '../../metrics/metrics.registry';
 import { AcidRainService } from './acid-rain.service';
 import { AiPracticeService } from '../ai-practice.service';
+import { ChatGateway } from '../../chat/chat.gateway';
 import type {
   JoinRoomPayload,
   LeaveRoomPayload,
+  LeaveSpectatePayload,
   MatchReadyEventPayload,
   ParticipantState,
+  SpectateRoomPayload,
   WordSubmitPayload,
 } from './acid-rain.interface';
 import { RoomStatus, type GameRoom } from '../game.interface';
@@ -29,8 +32,12 @@ import { RoomStatus, type GameRoom } from '../game.interface';
 interface GameSocketData {
   userId?: string;
   nickname?: string;
-  /** 현재 참여 중인 roomId (재접속 처리용) */
+  /** 현재 참여 중인 roomId (참가자 전용 — 재접속/FORFEIT 판정에 쓰임) */
   roomId?: string;
+  /** 현재 관전 중인 roomId — room.players/세션에는 등록되지 않으므로 roomId와 분리해서
+   *  관리한다. 참가자 전용 로직(handleDisconnect의 FORFEIT 판정 등)이 관전자를 상대방으로
+   *  오인하지 않도록 절대 roomId와 섞지 않는다. */
+  spectatingRoomId?: string;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -60,6 +67,7 @@ export class AcidRainGateway
     private readonly redisService: RedisService,
     private readonly acidRainService: AcidRainService,
     private readonly aiPracticeService: AiPracticeService,
+    private readonly chatGateway: ChatGateway,
   ) {}
 
   // ─── 연결 ─────────────────────────────────────────────────────────────────
@@ -84,13 +92,27 @@ export class AcidRainGateway
   // ─── 연결 해제 ────────────────────────────────────────────────────────────
 
   handleDisconnect(client: Socket) {
-    const { userId, nickname, roomId } = client.data as GameSocketData;
+    const { userId, nickname, roomId, spectatingRoomId } =
+      client.data as GameSocketData;
     this.logger.log(`Disconnected: ${client.id} (${nickname ?? 'unknown'})`);
 
     if (userId) websocketConnections.dec({ namespace: 'game' });
 
     if (userId && roomId) {
       this.acidRainService.handleDisconnect(roomId, userId, this.server);
+    }
+
+    if (spectatingRoomId) {
+      this.chatGateway
+        .sendSystemMessage(
+          spectatingRoomId,
+          `${nickname ?? '관전자'} 님이 관전을 종료했습니다.`,
+        )
+        .catch((err) =>
+          this.logger.error(
+            `Failed to send spectator-leave system message: ${String(err)}`,
+          ),
+        );
     }
   }
 
@@ -220,6 +242,71 @@ export class AcidRainGateway
     (client.data as GameSocketData).roomId = undefined;
   }
 
+  // ─── spectate_room (#70) ────────────────────────────────────────────────────
+
+  @SubscribeMessage('spectate_room')
+  async handleSpectateRoom(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: SpectateRoomPayload,
+  ) {
+    const { userId, nickname } = client.data as GameSocketData;
+    if (!userId) throw new WsException('Unauthorized');
+
+    const { roomId } = this.parseSpectateRoomPayload(payload);
+    this.logger.log(
+      `spectate_room received: room=${roomId} user=${userId} socket=${client.id}`,
+    );
+
+    // 진행 중인 매치가 아니면(대기 중/이미 종료) 관전 자체가 불가능하다. 참가자
+    // 인원수 검증(join_room의 2인 제약)과는 무관 — 관전자는 room.players에 들어가지
+    // 않으므로 이 검증을 거치지 않는다.
+    const snapshot = this.acidRainService.getSpectatorSnapshot(roomId);
+    if (!snapshot) {
+      this.logger.warn(
+        `spectate_room rejected — not spectatable: room=${roomId} user=${userId}`,
+      );
+      throw new WsException('Room is not currently spectatable');
+    }
+
+    await client.join(`game:${roomId}`);
+    (client.data as GameSocketData).spectatingRoomId = roomId;
+    this.logger.log(
+      `spectate_room joined + state_sync sent: room=${roomId} user=${userId}`,
+    );
+    client.emit('state_sync', snapshot);
+    this.chatGateway
+      .sendSystemMessage(roomId, `${nickname ?? '관전자'} 님이 관전을 시작했습니다.`)
+      .catch((err) =>
+        this.logger.error(
+          `Failed to send spectator-join system message: ${String(err)}`,
+        ),
+      );
+  }
+
+  // ─── leave_spectate (#70) ───────────────────────────────────────────────────
+
+  @SubscribeMessage('leave_spectate')
+  async handleLeaveSpectate(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: LeaveSpectatePayload,
+  ) {
+    const { userId, nickname } = client.data as GameSocketData;
+    if (!userId) throw new WsException('Unauthorized');
+
+    const { roomId } = this.parseLeaveSpectatePayload(payload);
+
+    await client.leave(`game:${roomId}`);
+    (client.data as GameSocketData).spectatingRoomId = undefined;
+
+    this.chatGateway
+      .sendSystemMessage(roomId, `${nickname ?? '관전자'} 님이 관전을 종료했습니다.`)
+      .catch((err) =>
+        this.logger.error(
+          `Failed to send spectator-leave system message: ${String(err)}`,
+        ),
+      );
+  }
+
   // ─── word_submit ──────────────────────────────────────────────────────────
 
   @SubscribeMessage('word_submit')
@@ -227,8 +314,13 @@ export class AcidRainGateway
     @ConnectedSocket() client: Socket,
     @MessageBody() payload: WordSubmitPayload,
   ): Promise<void> {
-    const { userId } = client.data as GameSocketData;
+    const { userId, spectatingRoomId } = client.data as GameSocketData;
     if (!userId) throw new WsException('Unauthorized');
+    // 관전자는 매치 판정에 참여할 수 없다 — service의 isParticipant 검증이 최종
+    // 방어선이지만, 여기서 먼저 걸러 불필요한 attemptId 기록을 남기지 않는다.
+    if (spectatingRoomId) {
+      throw new WsException('Spectators cannot submit words');
+    }
 
     const { roomId, wordId, text, attemptId } =
       this.parseWordSubmitPayload(payload);
@@ -259,6 +351,20 @@ export class AcidRainGateway
   private parseLeaveRoomPayload(payload: unknown): LeaveRoomPayload {
     if (!isRecord(payload) || !isNonEmptyString(payload.roomId)) {
       throw new WsException('Invalid leave_room payload');
+    }
+    return { roomId: payload.roomId };
+  }
+
+  private parseSpectateRoomPayload(payload: unknown): SpectateRoomPayload {
+    if (!isRecord(payload) || !isNonEmptyString(payload.roomId)) {
+      throw new WsException('Invalid spectate_room payload');
+    }
+    return { roomId: payload.roomId };
+  }
+
+  private parseLeaveSpectatePayload(payload: unknown): LeaveSpectatePayload {
+    if (!isRecord(payload) || !isNonEmptyString(payload.roomId)) {
+      throw new WsException('Invalid leave_spectate payload');
     }
     return { roomId: payload.roomId };
   }

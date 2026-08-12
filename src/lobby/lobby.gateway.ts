@@ -250,6 +250,14 @@ export class LobbyGateway implements OnModuleInit {
         break;
       }
 
+      case 'LIST_SPECTATABLE_ROOMS': {
+        const rooms = await this.gameService.getSpectatableRooms();
+        this.lobbyService.sendTo(client, 'SPECTATABLE_ROOM_LIST', {
+          rooms: rooms.map(toLobbyRoom),
+        });
+        break;
+      }
+
       case 'CREATE_ROOM': {
         await this.aiPracticeService.assertNoActivePractice(client.userId);
         const { maxPlayers } = (payload ?? {}) as { maxPlayers?: number };

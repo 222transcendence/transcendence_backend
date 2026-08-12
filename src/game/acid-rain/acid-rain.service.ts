@@ -488,14 +488,25 @@ export class AcidRainService implements OnModuleInit {
 
     server.to(`game:${roomId}`).emit('opponent_reconnected', { userId });
 
+    clientSocket.emit('state_sync', this.buildStateSyncPayload(session));
+  }
+
+  /**
+   * 세션 상태를 state_sync 페이로드로 변환하는 순수 함수. 재접속(handleReconnect)과
+   * 관전 입장(getSpectatorSnapshot) 양쪽에서 재사용한다 — session.host/session.guest를
+   * 직접 참조하지 않고 participantStates/hpByParticipantId 변환 헬퍼만 거친다.
+   */
+  private buildStateSyncPayload(
+    session: AcidRainSession,
+  ): StateSyncEventPayload {
     const elapsed = Date.now() - session.startedAt;
     const spawnInterval = Math.max(
       700,
       2000 - 50 * Math.floor(elapsed / 10000),
     );
 
-    const payload: StateSyncEventPayload = {
-      roomId,
+    return {
+      roomId: session.roomId,
       participants: this.participantStates(session),
       hp: this.hpByParticipantId(session),
       activeWords: Array.from(session.activeWords.values()).map(
@@ -524,7 +535,18 @@ export class AcidRainService implements OnModuleInit {
       spawnIntervalMs: spawnInterval,
       now: new Date().toISOString(),
     };
-    clientSocket.emit('state_sync', payload);
+  }
+
+  /**
+   * 관전자 입장 시 보낼 초기 스냅샷. 매치가 진행 중(IN_PROGRESS)일 때만 값을 반환하고,
+   * 세션이 없거나 아직 COUNTDOWN/이미 FINISHED면 null — 게이트웨이가 거부 사유로 사용한다.
+   * 관전자는 room.players/세션 어디에도 등록되지 않으므로 이 메서드는 조회만 하고 아무
+   * 상태도 바꾸지 않는다.
+   */
+  getSpectatorSnapshot(roomId: string): StateSyncEventPayload | null {
+    const session = this.sessions.get(roomId);
+    if (!session || session.status !== 'IN_PROGRESS') return null;
+    return this.buildStateSyncPayload(session);
   }
 
   // ─── 매치 종료 ────────────────────────────────────────────────────────────
