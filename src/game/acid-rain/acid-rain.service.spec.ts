@@ -7,12 +7,16 @@ import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
 import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
 import { MatchHistory } from '../entities/match-history.entity';
+import { MatchParticipant } from '../entities/match-participant.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
-  HpPair,
+  AcidRainSession,
+  HpMap,
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
   JudgeWordSubmitRejected,
+  PlayerPublic,
+  RankedParticipant,
   WordSpawnPayload,
 } from './acid-rain.interface';
 
@@ -22,24 +26,35 @@ function assertRejected(
   if (result.accepted) throw new Error('expected a rejected submit result');
 }
 
+/** typeorm `In(ids)` produces a FindOperator whose `.value` holds the id array. */
+function extractInIds(operator: unknown): string[] {
+  const value = (operator as { value?: unknown } | undefined)?.value;
+  return Array.isArray(value) ? (value as string[]) : [];
+}
+
 interface WordClearedPayload {
   wordId: string;
   clearedBy: string;
+  targetUserId: string;
   damage: number;
-  targetHp: HpPair;
+  hp: HpMap;
 }
 interface WordMissedPayload {
   wordId: string;
   splashDamage: number;
-  targetHp: HpPair;
+  hp: HpMap;
+}
+interface PlayerEliminatedPayload {
+  userId: string;
+  rank: number;
+  remainingPlayers: number;
 }
 interface MatchEndPayload {
   roomId: string;
   winnerId: string | null;
   reason: 'KO' | 'TIME_LIMIT' | 'FORFEIT';
-  finalHp: HpPair;
-  wordsTyped: { host: number; guest: number };
-  durationSec: number;
+  finalHp: HpMap;
+  ranking: RankedParticipant[];
 }
 interface OpponentDisconnectedPayload {
   userId: string;
@@ -50,11 +65,25 @@ interface OpponentReconnectedPayload {
 }
 interface StateSyncPayload {
   roomId: string;
-  hp: HpPair;
+  hp: HpMap;
   activeWords: WordSpawnPayload[];
   elapsedMs: number;
   spawnIntervalMs: number;
   now: string;
+}
+interface SavedMatchHistory {
+  winner: { id: string } | null;
+  matchData: {
+    reason: string;
+    durationSec: number;
+    participants: Array<{
+      userId: string;
+      finalHp: number;
+      rank: number;
+      wordsTyped: number;
+    }>;
+  };
+  participants: Array<{ user: { id: string }; finalHp: number; rank: number }>;
 }
 
 describe('AcidRainService', () => {
@@ -63,18 +92,30 @@ describe('AcidRainService', () => {
   let emitSpy: jest.Mock<void, [string, unknown]>;
   let server: Server;
 
-  const HOST = { userId: 'host-id', nickname: 'hostNick' };
-  const GUEST = { userId: 'guest-id', nickname: 'guestNick' };
+  const HOST: PlayerPublic = { userId: 'host-id', nickname: 'hostNick' };
+  const GUEST: PlayerPublic = { userId: 'guest-id', nickname: 'guestNick' };
+  const PLAYERS2: PlayerPublic[] = [HOST, GUEST];
+
+  const P1: PlayerPublic = { userId: 'p1-id', nickname: 'P1' };
+  const P2: PlayerPublic = { userId: 'p2-id', nickname: 'P2' };
+  const P3: PlayerPublic = { userId: 'p3-id', nickname: 'P3' };
+  const P4: PlayerPublic = { userId: 'p4-id', nickname: 'P4' };
+  const PLAYERS3: PlayerPublic[] = [P1, P2, P3];
+  const PLAYERS4: PlayerPublic[] = [P1, P2, P3, P4];
+
   const ROOM_ID = 'room-1';
 
   const mockUserRepository = {
     update: jest.fn().mockResolvedValue({ affected: 0 }),
-    findOneBy: jest
-      .fn()
-      .mockImplementation(({ id }: { id: string }) =>
-        Promise.resolve({ id, nickname: id }),
-      ),
+    findBy: jest.fn().mockImplementation((criteria: { id: unknown }) => {
+      const ids = extractInIds(criteria.id);
+      return Promise.resolve(ids.map((id) => ({ id, nickname: id })));
+    }),
     increment: jest.fn().mockResolvedValue({ affected: 1 }),
+  };
+
+  const mockParticipantRepository = {
+    create: jest.fn().mockImplementation((dto: unknown) => dto),
   };
 
   const mockMatchHistoryRepository = {
@@ -90,10 +131,12 @@ describe('AcidRainService', () => {
             }) => Promise<unknown>,
           ) =>
             work({
-              getRepository: (target: unknown) =>
-                target === User
-                  ? mockUserRepository
-                  : mockMatchHistoryRepository,
+              getRepository: (target: unknown) => {
+                if (target === User) return mockUserRepository;
+                if (target === MatchParticipant)
+                  return mockParticipantRepository;
+                return mockMatchHistoryRepository;
+              },
             }),
         ),
     },
@@ -141,10 +184,12 @@ describe('AcidRainService', () => {
     redisStore = {};
     jest.clearAllMocks();
     mockUserRepository.update.mockResolvedValue({ affected: 0 });
-    mockUserRepository.findOneBy.mockImplementation(({ id }: { id: string }) =>
-      Promise.resolve({ id, nickname: id }),
-    );
+    mockUserRepository.findBy.mockImplementation((criteria: { id: unknown }) => {
+      const ids = extractInIds(criteria.id);
+      return Promise.resolve(ids.map((id) => ({ id, nickname: id })));
+    });
     mockUserRepository.increment.mockResolvedValue({ affected: 1 });
+    mockParticipantRepository.create.mockImplementation((dto: unknown) => dto);
     mockMatchHistoryRepository.create.mockImplementation((dto: unknown) => dto);
     mockMatchHistoryRepository.save.mockResolvedValue({});
     mockMatchHistoryRepository.manager.transaction.mockImplementation(
@@ -154,8 +199,11 @@ describe('AcidRainService', () => {
         }) => Promise<unknown>,
       ) =>
         work({
-          getRepository: (target: unknown) =>
-            target === User ? mockUserRepository : mockMatchHistoryRepository,
+          getRepository: (target: unknown) => {
+            if (target === User) return mockUserRepository;
+            if (target === MatchParticipant) return mockParticipantRepository;
+            return mockMatchHistoryRepository;
+          },
         }),
     );
     mockRedisService.set.mockImplementation((key: string, value: string) => {
@@ -205,8 +253,14 @@ describe('AcidRainService', () => {
       .map(([, payload]) => payload as T);
   }
 
-  async function startAndReachFirstSpawn(): Promise<WordSpawnPayload> {
-    await service.startMatch(ROOM_ID, HOST, GUEST, server);
+  async function startMatch(players: PlayerPublic[] = PLAYERS2): Promise<void> {
+    await service.startMatch(ROOM_ID, players, server);
+  }
+
+  async function startAndReachFirstSpawn(
+    players: PlayerPublic[] = PLAYERS2,
+  ): Promise<WordSpawnPayload> {
+    await service.startMatch(ROOM_ID, players, server);
     await jest.advanceTimersByTimeAsync(3000); // countdown
     await jest.advanceTimersByTimeAsync(2000); // fixed initial spawn delay
     const spawns = eventsNamed<WordSpawnPayload>('word_spawn');
@@ -218,6 +272,28 @@ describe('AcidRainService', () => {
     input: JudgeWordSubmitInput,
   ): Promise<JudgeWordSubmitResult> {
     return service.submitWord(input, server);
+  }
+
+  /** Directly injects a synthetic ACTIVE word into a session, bypassing the spawn loop/timers. */
+  function injectActiveWord(
+    session: AcidRainSession,
+    wordId: string,
+    text: string,
+  ): void {
+    session.activeWords.set(wordId, {
+      wordId,
+      text,
+      keystrokes: 4,
+      lane: 0,
+      fallDurationMs: 5000,
+      spawnedAt: new Date(Date.now()).toISOString(),
+      landAt: Date.now() + 5000,
+    });
+  }
+
+  function stopLoops(session: AcidRainSession): void {
+    if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+    if (session.missLoopTimer) clearInterval(session.missLoopTimer);
   }
 
   describe('spawn — fall duration formula (GAME_DESIGN.md §3.5)', () => {
@@ -238,7 +314,7 @@ describe('AcidRainService', () => {
     });
   });
 
-  describe('submitWord — damage formula (GAME_DESIGN.md §3.6)', () => {
+  describe('submitWord — damage formula (GAME_DESIGN.md §3.6, 2-player)', () => {
     it('accepts a correct socket-free judge request and returns broadcast data', async () => {
       const word = await startAndReachFirstSpawn();
       const input: JudgeWordSubmitInput = {
@@ -261,22 +337,23 @@ describe('AcidRainService', () => {
           wordStateBefore: 'ACTIVE',
           wordStateAfter: 'CLEARED',
           damage: 5 + Math.ceil(word.keystrokes / 2),
+          targetUserId: GUEST.userId,
           gameEnded: false,
           winnerId: null,
-          loserId: null,
         }),
       );
       if (result.accepted) {
         expect(result.wordCleared).toEqual({
           wordId: word.wordId,
           clearedBy: HOST.userId,
+          targetUserId: GUEST.userId,
           damage: result.damage,
-          targetHp: result.targetHp,
+          hp: result.hp,
         });
       }
     });
 
-    it('correct hit deals 5 + ceil(keystrokes/2) to the opponent', async () => {
+    it('correct hit deals 5 + ceil(keystrokes/2) to the (only) opponent', async () => {
       const word = await startAndReachFirstSpawn();
       await submitWord({
         roomId: ROOM_ID,
@@ -288,8 +365,9 @@ describe('AcidRainService', () => {
       const cleared = eventsNamed<WordClearedPayload>('word_cleared');
       expect(cleared).toHaveLength(1);
       expect(cleared[0].damage).toBe(5 + Math.ceil(word.keystrokes / 2));
-      expect(cleared[0].targetHp.guest).toBe(100 - cleared[0].damage);
-      expect(cleared[0].targetHp.host).toBe(100);
+      expect(cleared[0].targetUserId).toBe(GUEST.userId);
+      expect(cleared[0].hp[GUEST.userId]).toBe(100 - cleared[0].damage);
+      expect(cleared[0].hp[HOST.userId]).toBe(100);
     });
 
     it('marks a correct submission as ACTIVE to CLEARED', async () => {
@@ -317,14 +395,14 @@ describe('AcidRainService', () => {
       });
     });
 
-    it('a miss (word lands unclaimed) deals fixed 3 damage to both players', async () => {
+    it('a miss (word lands unclaimed) deals fixed 3 splash damage to all survivors', async () => {
       const word = await startAndReachFirstSpawn();
       await jest.advanceTimersByTimeAsync(word.fallDurationMs + 200); // miss loop ticks every 200ms
 
       const missed = eventsNamed<WordMissedPayload>('word_missed');
       expect(missed).toHaveLength(1);
       expect(missed[0].splashDamage).toBe(3);
-      expect(missed[0].targetHp).toEqual({ host: 97, guest: 97 });
+      expect(missed[0].hp).toEqual({ [HOST.userId]: 97, [GUEST.userId]: 97 });
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
       ).toEqual({
@@ -332,10 +410,10 @@ describe('AcidRainService', () => {
       });
     });
 
-    it('returns KO metadata when a correct submission brings a player to 0 HP', async () => {
+    it('returns KO metadata when a correct submission brings the opponent to 0 HP', async () => {
       const word = await startAndReachFirstSpawn();
       const session = service.getSession(ROOM_ID)!;
-      session.hp.guest = 1;
+      session.hp[GUEST.userId] = 1;
 
       const result = await submitWord({
         roomId: ROOM_ID,
@@ -345,11 +423,14 @@ describe('AcidRainService', () => {
       });
 
       expect(result.accepted).toBe(true);
+      if (!result.accepted) return;
       expect(result.gameEnded).toBe(true);
       expect(result.endReason).toBe('KO');
       expect(result.winnerId).toBe(HOST.userId);
-      expect(result.loserId).toBe(GUEST.userId);
-      expect(result.targetHp).toEqual({ host: 100, guest: 0 });
+      // 2-player match: the eliminated GUEST leaves exactly 1 survivor (HOST),
+      // so GUEST's rank is remainingAfter(1) + 1 = 2.
+      expect(result.eliminatedRank).toBe(2);
+      expect(result.hp).toEqual({ [HOST.userId]: 100, [GUEST.userId]: 0 });
     });
 
     it('rejects a wordId that was already cleared (idempotent, race-condition safe)', async () => {
@@ -412,7 +493,7 @@ describe('AcidRainService', () => {
     });
 
     it('rejects an unknown wordId', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       const result = await submitWord({
         roomId: ROOM_ID,
@@ -466,7 +547,7 @@ describe('AcidRainService', () => {
       expect(result.accepted).toBe(false);
       assertRejected(result);
       expect(result.reason).toBe('PLAYER_NOT_FOUND');
-      expect(result.targetHp).toEqual(hpBefore);
+      expect(result.hp).toEqual(hpBefore);
       expect(session.activeWords.has(word.wordId)).toBe(true);
       expect(session.hp).toEqual(hpBefore);
     });
@@ -510,7 +591,6 @@ describe('AcidRainService', () => {
           damage: 0,
           gameEnded: false,
           winnerId: null,
-          loserId: null,
         }),
       );
       expect(session.activeWords.has(word.wordId)).toBe(true);
@@ -541,6 +621,31 @@ describe('AcidRainService', () => {
         }),
       );
       expect(session.hp).toEqual(hpAfterMiss);
+    });
+
+    it('rejects submission from a player who is already eliminated (PLAYER_ELIMINATED)', async () => {
+      const word = await startAndReachFirstSpawn(PLAYERS3);
+      const session = service.getSession(ROOM_ID)!;
+      session.eliminated.push({ userId: P3.userId, rank: 3 });
+      session.hp[P3.userId] = 0;
+      const hpBefore = { ...session.hp };
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: P3.userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
+
+      expect(result.accepted).toBe(false);
+      assertRejected(result);
+      expect(result.reason).toBe('PLAYER_ELIMINATED');
+      expect(result.submitRejected).toEqual({
+        wordId: word.wordId,
+        reason: 'NOT_FOUND',
+      });
+      expect(session.activeWords.has(word.wordId)).toBe(true);
+      expect(session.hp).toEqual(hpBefore);
     });
 
     it('returns the first result for a duplicate attemptId without applying state twice', async () => {
@@ -687,7 +792,7 @@ describe('AcidRainService', () => {
     it('awaits KO finalization through the socket-free submitWord entry point', async () => {
       const word = await startAndReachFirstSpawn();
       const session = service.getSession(ROOM_ID)!;
-      session.hp.guest = 1;
+      session.hp[GUEST.userId] = 1;
 
       const result = await service.submitWord(
         {
@@ -712,7 +817,7 @@ describe('AcidRainService', () => {
     });
 
     it('awaits delayed spawn persistence before deleting acidroom during KO finalization', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       mockRedisService.set.mockClear();
       mockRedisService.set.mockImplementation((key: string, value: string) => {
@@ -726,7 +831,7 @@ describe('AcidRainService', () => {
       await jest.advanceTimersByTimeAsync(2000);
       const word = eventsNamed<WordSpawnPayload>('word_spawn')[0];
       const session = service.getSession(ROOM_ID)!;
-      session.hp.guest = 1;
+      session.hp[GUEST.userId] = 1;
 
       const submitPromise = service.submitWord(
         {
@@ -750,7 +855,7 @@ describe('AcidRainService', () => {
     it('replays a KO attempt after session deletion without repeating broadcasts or finalization', async () => {
       const word = await startAndReachFirstSpawn();
       const session = service.getSession(ROOM_ID)!;
-      session.hp.guest = 1;
+      session.hp[GUEST.userId] = 1;
 
       const first = await service.submitWord(
         {
@@ -787,7 +892,7 @@ describe('AcidRainService', () => {
     it('retries only KO finalization after an endMatch failure on attempt replay', async () => {
       const word = await startAndReachFirstSpawn();
       const session = service.getSession(ROOM_ID)!;
-      session.hp.guest = 1;
+      session.hp[GUEST.userId] = 1;
       mockRedisService.del
         .mockRejectedValueOnce(new Error('redis down'))
         .mockImplementation((key: string) => {
@@ -850,7 +955,7 @@ describe('AcidRainService', () => {
     it('automatically retries an attemptId-free KO finalization failure without repeating broadcasts', async () => {
       const word = await startAndReachFirstSpawn();
       const session = service.getSession(ROOM_ID)!;
-      session.hp.guest = 1;
+      session.hp[GUEST.userId] = 1;
       mockRedisService.del
         .mockRejectedValueOnce(new Error('redis down'))
         .mockImplementation((key: string) => {
@@ -883,7 +988,7 @@ describe('AcidRainService', () => {
     });
   });
 
-  describe('match end conditions', () => {
+  describe('match end conditions (2-player)', () => {
     it('ends with KO reason once a player reaches 0 HP', async () => {
       let currentWord = await startAndReachFirstSpawn();
       // guest lands enough hits on host to bring HP to 0 — simplest deterministic path:
@@ -912,27 +1017,20 @@ describe('AcidRainService', () => {
 
     it('schedules a forced TIME_LIMIT end at 180s regardless of match outcome by then', async () => {
       const endMatchSpy = jest.spyOn(service, 'endMatch');
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
-      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
-      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      stopLoops(session);
       await jest.advanceTimersByTimeAsync(180_000);
 
-      expect(endMatchSpy).toHaveBeenCalledWith(
-        ROOM_ID,
-        'TIME_LIMIT',
-        server,
-        undefined,
-      );
+      expect(endMatchSpy).toHaveBeenCalledWith(ROOM_ID, 'TIME_LIMIT', server);
     });
 
     it('catches TIME_LIMIT finalization failure and retries without repeating match_end', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
-      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
-      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      stopLoops(session);
       mockRedisService.del
         .mockRejectedValueOnce(new Error('redis down'))
         .mockImplementation((key: string) => {
@@ -954,12 +1052,12 @@ describe('AcidRainService', () => {
       expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
     });
 
-    it('retries miss KO finalization failure without repeating match_end', async () => {
+    it('retries miss-splash KO finalization failure without repeating match_end', async () => {
       const word = await startAndReachFirstSpawn();
       const session = service.getSession(ROOM_ID)!;
       if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
-      session.hp.host = 3;
-      session.hp.guest = 50;
+      session.hp[HOST.userId] = 3;
+      session.hp[GUEST.userId] = 50;
       const activeWord = session.activeWords.get(word.wordId)!;
       activeWord.landAt = Date.now();
       mockRedisService.del
@@ -986,11 +1084,11 @@ describe('AcidRainService', () => {
     });
 
     it('TIME_LIMIT picks the higher-HP player as winner (tie = draw)', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
-      session.hp.host = 40;
-      session.hp.guest = 70;
+      session.hp[HOST.userId] = 40;
+      session.hp[GUEST.userId] = 70;
 
       await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
 
@@ -1004,7 +1102,7 @@ describe('AcidRainService', () => {
     });
 
     it('runs match finalization side effects only once for repeated endMatch calls', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       jest.clearAllMocks();
       emitSpy.mockClear();
@@ -1023,11 +1121,13 @@ describe('AcidRainService', () => {
     });
 
     it('automatically retries direct FORFEIT finalization failure without repeating completed side effects', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
-      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
-      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      stopLoops(session);
+      // simulate HOST having already been eliminated (e.g. by an earlier leave/disconnect)
+      session.eliminated.push({ userId: HOST.userId, rank: 2 });
+      session.hp[HOST.userId] = 0;
       mockRedisService.del
         .mockRejectedValueOnce(new Error('redis down'))
         .mockImplementation((key: string) => {
@@ -1038,7 +1138,7 @@ describe('AcidRainService', () => {
       jest.clearAllMocks();
 
       await expect(
-        service.endMatch(ROOM_ID, 'FORFEIT', server, GUEST.userId),
+        service.endMatch(ROOM_ID, 'FORFEIT', server),
       ).rejects.toThrow('redis down');
       expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
       expect(eventsNamed<MatchEndPayload>('match_end')).toEqual([
@@ -1053,19 +1153,15 @@ describe('AcidRainService', () => {
       expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
     });
 
-    it('commits match history and stats once when finalization is retried after partial DB failure', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+    it('commits match history and stats exactly once when finalization is retried after a mid-transaction failure', async () => {
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
-      session.hp.host = 30;
-      session.hp.guest = 70;
-      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
-      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      session.hp[HOST.userId] = 30;
+      session.hp[GUEST.userId] = 70;
+      stopLoops(session);
 
-      const committedHistories: Array<{
-        matchData: { reason: string; finalHp: HpPair };
-        winner: { id: string } | null;
-      }> = [];
+      const committedHistories: SavedMatchHistory[] = [];
       const committedStats: Record<string, { wins: number; losses: number }> = {
         [HOST.userId]: { wins: 0, losses: 0 },
         [GUEST.userId]: { wins: 0, losses: 0 },
@@ -1077,24 +1173,27 @@ describe('AcidRainService', () => {
             getRepository: (target: unknown) => unknown;
           }) => Promise<unknown>,
         ) => {
-          const pendingHistories: typeof committedHistories = [];
+          const pendingHistories: SavedMatchHistory[] = [];
           const pendingStats: typeof committedStats = {
             [HOST.userId]: { ...committedStats[HOST.userId] },
             [GUEST.userId]: { ...committedStats[GUEST.userId] },
           };
           const txMatchHistoryRepo = {
             create: mockMatchHistoryRepository.create,
-            save: jest.fn((history: (typeof committedHistories)[number]) => {
+            save: jest.fn((history: SavedMatchHistory) => {
               pendingHistories.push(history);
               return Promise.resolve(history);
             }),
           };
+          const txParticipantRepo = {
+            create: jest.fn((dto: unknown) => dto),
+          };
           const txUserRepo = {
-            findOneBy: mockUserRepository.findOneBy,
+            findBy: mockUserRepository.findBy,
             increment: jest.fn(
               (
                 criteria: { id: string },
-                field: 'wins' | 'losses',
+                field: 'wins' | 'losses' | 'draws',
                 amount: number,
               ) => {
                 if (
@@ -1105,15 +1204,20 @@ describe('AcidRainService', () => {
                   failLoserLossOnce = false;
                   return Promise.reject(new Error('loss update failed'));
                 }
-                pendingStats[criteria.id][field] += amount;
+                if (field !== 'draws') {
+                  pendingStats[criteria.id][field] += amount;
+                }
                 return Promise.resolve({ affected: 1 });
               },
             ),
           };
 
           await work({
-            getRepository: (target: unknown) =>
-              target === User ? txUserRepo : txMatchHistoryRepo,
+            getRepository: (target: unknown) => {
+              if (target === User) return txUserRepo;
+              if (target === MatchParticipant) return txParticipantRepo;
+              return txMatchHistoryRepo;
+            },
           });
           committedHistories.push(...pendingHistories);
           committedStats[HOST.userId] = pendingStats[HOST.userId];
@@ -1124,7 +1228,11 @@ describe('AcidRainService', () => {
       await expect(
         service.endMatch(ROOM_ID, 'TIME_LIMIT', server),
       ).rejects.toThrow('loss update failed');
-      await service.endMatch(ROOM_ID, 'FORFEIT', server, HOST.userId);
+      expect(committedHistories).toHaveLength(0);
+
+      // the automatic retry timer (MATCH_END_RETRY_DELAY_MS) re-runs endMatch with the
+      // same stored reason/snapshot and this time the increment succeeds.
+      await jest.advanceTimersByTimeAsync(1000);
 
       expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
       expect(eventsNamed<MatchEndPayload>('match_end')[0]).toEqual(
@@ -1135,10 +1243,18 @@ describe('AcidRainService', () => {
       );
       expect(committedHistories).toHaveLength(1);
       expect(committedHistories[0].matchData.reason).toBe('TIME_LIMIT');
-      expect(committedHistories[0].matchData.finalHp).toEqual({
-        host: 30,
-        guest: 70,
-      });
+      expect(committedHistories[0].participants).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            finalHp: 30,
+            user: expect.objectContaining({ id: HOST.userId }),
+          }),
+          expect.objectContaining({
+            finalHp: 70,
+            user: expect.objectContaining({ id: GUEST.userId }),
+          }),
+        ]),
+      );
       expect(committedHistories[0].winner?.id).toBe(GUEST.userId);
       expect(committedStats[GUEST.userId].wins).toBe(1);
       expect(committedStats[HOST.userId].losses).toBe(1);
@@ -1146,9 +1262,9 @@ describe('AcidRainService', () => {
     });
   });
 
-  describe('disconnect / reconnect', () => {
+  describe('disconnect / reconnect (2-player)', () => {
     it('starts a 30s grace period and forfeits to the opponent if no reconnect', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
 
       service.handleDisconnect(ROOM_ID, HOST.userId, server);
@@ -1161,18 +1277,25 @@ describe('AcidRainService', () => {
 
       await jest.advanceTimersByTimeAsync(30_000);
 
+      const eliminated = eventsNamed<PlayerEliminatedPayload>(
+        'player_eliminated',
+      );
+      expect(eliminated).toContainEqual({
+        userId: HOST.userId,
+        rank: 2,
+        remainingPlayers: 1,
+      });
       const ended = eventsNamed<MatchEndPayload>('match_end');
       expect(ended).toContainEqual(
         expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
       );
     });
 
-    it('retries FORFEIT finalization failure with the original override winner', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+    it('retries FORFEIT finalization failure after a disconnect grace-timeout elimination', async () => {
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
-      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
-      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      stopLoops(session);
       mockRedisService.del
         .mockRejectedValueOnce(new Error('redis down'))
         .mockImplementation((key: string) => {
@@ -1192,17 +1315,15 @@ describe('AcidRainService', () => {
 
       expect(service.getSession(ROOM_ID)).toBeUndefined();
       expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
-      const saved = mockMatchHistoryRepository.save.mock.calls[0][0] as {
-        winner: { id: string } | null;
-        matchData: { reason: string };
-      };
+      const saved = mockMatchHistoryRepository.save.mock
+        .calls[0][0] as SavedMatchHistory;
       expect(saved.winner?.id).toBe(GUEST.userId);
       expect(saved.matchData.reason).toBe('FORFEIT');
       expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
     });
 
     it('cancels the grace timer and sends state_sync on reconnect within the grace period', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       await jest.advanceTimersByTimeAsync(2000); // one word spawned
 
@@ -1235,40 +1356,50 @@ describe('AcidRainService', () => {
     });
   });
 
-  describe('endMatch persistence', () => {
-    it('saves MatchHistory with finalHp/wordsTyped/durationSec and updates wins/losses', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+  describe('endMatch persistence (2-player)', () => {
+    it('saves MatchHistory with finalHp/ranking/durationSec and updates wins/losses', async () => {
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
 
       expect(mockMatchHistoryRepository.save).toHaveBeenCalled();
-      const saved = mockMatchHistoryRepository.save.mock.calls[0][0] as {
-        matchData: {
-          finalHp: HpPair;
-          wordsTyped: { host: number; guest: number };
-          durationSec: number;
-          reason: string;
-        };
-      };
-      expect(saved.matchData.finalHp).toEqual({ host: 100, guest: 100 });
-      expect(saved.matchData.wordsTyped).toEqual({ host: 0, guest: 0 });
+      const saved = mockMatchHistoryRepository.save.mock
+        .calls[0][0] as SavedMatchHistory;
+      expect(saved.participants).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            finalHp: 100,
+            user: expect.objectContaining({ id: HOST.userId }),
+          }),
+          expect.objectContaining({
+            finalHp: 100,
+            user: expect.objectContaining({ id: GUEST.userId }),
+          }),
+        ]),
+      );
       expect(saved.matchData.durationSec).toBeGreaterThanOrEqual(0);
       expect(saved.matchData.reason).toBe('TIME_LIMIT');
+      // equal HP at TIME_LIMIT is a tie/draw — no unique winner
+      expect(saved.winner).toBeNull();
+      expect(saved.participants).toHaveLength(2);
     });
 
     it('does not complete finalization when required users are missing from history transaction', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       let missingGuestOnce = true;
-      mockUserRepository.findOneBy.mockImplementation(
-        ({ id }: { id: string }) => {
-          if (missingGuestOnce && id === GUEST.userId) {
-            missingGuestOnce = false;
-            return Promise.resolve(null);
-          }
-          return Promise.resolve({ id, nickname: id });
-        },
-      );
+      mockUserRepository.findBy.mockImplementation((criteria: { id: unknown }) => {
+        const ids = extractInIds(criteria.id);
+        if (missingGuestOnce) {
+          missingGuestOnce = false;
+          return Promise.resolve(
+            ids
+              .filter((id) => id !== GUEST.userId)
+              .map((id) => ({ id, nickname: id })),
+          );
+        }
+        return Promise.resolve(ids.map((id) => ({ id, nickname: id })));
+      });
 
       await expect(
         service.endMatch(ROOM_ID, 'TIME_LIMIT', server),
@@ -1296,6 +1427,473 @@ describe('AcidRainService', () => {
         { status: UserStatus.ONLINE },
       );
       expect(redisStore['game:acidroom:stale-room']).toBeUndefined();
+    });
+  });
+
+  // ─── N-player (battle royale) specific coverage (#94) ──────────────────────
+
+  describe('N-player — random target selection on correct word (GAME_DESIGN §3.6)', () => {
+    it('always damages a valid survivor candidate (not the clearer, not eliminated) across many trials', async () => {
+      const players = PLAYERS4;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+
+      const seenTargets = new Set<string>();
+      for (let i = 0; i < 40; i++) {
+        const wordId = `w_trial_${i}`;
+        const text = `단어${i}`;
+        injectActiveWord(session, wordId, text);
+        const result = await submitWord({
+          roomId: ROOM_ID,
+          playerId: players[0].userId,
+          wordId,
+          text,
+        });
+        expect(result.accepted).toBe(true);
+        if (!result.accepted) continue;
+        expect(result.targetUserId).not.toBe(players[0].userId);
+        expect(players.slice(1).map((p) => p.userId)).toContain(
+          result.targetUserId,
+        );
+        seenTargets.add(result.targetUserId);
+        // reset HP so the candidate pool doesn't shrink across trials
+        session.hp[result.targetUserId] = 100;
+      }
+
+      // with real Math.random and 3 candidates over 40 trials, expect more than one distinct target
+      expect(seenTargets.size).toBeGreaterThan(1);
+    });
+
+    it('pins the damaged target deterministically when Math.random is mocked', async () => {
+      const players = PLAYERS3;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+      const randomSpy = jest.spyOn(Math, 'random');
+
+      injectActiveWord(session, 'w_pin_low', 'low');
+      randomSpy.mockReturnValueOnce(0); // candidates[0] of [P2, P3]
+      const first = await submitWord({
+        roomId: ROOM_ID,
+        playerId: players[0].userId,
+        wordId: 'w_pin_low',
+        text: 'low',
+      });
+      expect(first.accepted).toBe(true);
+      if (first.accepted) expect(first.targetUserId).toBe(players[1].userId);
+
+      session.hp[players[1].userId] = 100;
+      injectActiveWord(session, 'w_pin_high', 'high');
+      randomSpy.mockReturnValueOnce(0.999); // candidates[1] of [P2, P3]
+      const second = await submitWord({
+        roomId: ROOM_ID,
+        playerId: players[0].userId,
+        wordId: 'w_pin_high',
+        text: 'high',
+      });
+      expect(second.accepted).toBe(true);
+      if (second.accepted) expect(second.targetUserId).toBe(players[2].userId);
+
+      randomSpy.mockRestore();
+    });
+  });
+
+  describe('N-player — elimination via word_cleared', () => {
+    it('eliminating one of 3 players (2 survivors remain) keeps the match IN_PROGRESS and excludes them from future targeting', async () => {
+      const players = PLAYERS3;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+      session.hp[players[1].userId] = 1; // about to die
+      const randomSpy = jest.spyOn(Math, 'random').mockReturnValue(0); // picks first candidate
+
+      injectActiveWord(session, 'w_kill', 'kill');
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: players[0].userId,
+        wordId: 'w_kill',
+        text: 'kill',
+      });
+
+      expect(result.accepted).toBe(true);
+      if (!result.accepted) return;
+      expect(result.targetUserId).toBe(players[1].userId);
+      expect(result.eliminatedRank).toBe(3);
+      expect(result.remainingPlayers).toBe(2);
+      expect(result.gameEnded).toBe(false);
+      expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
+
+      const eliminated = eventsNamed<PlayerEliminatedPayload>(
+        'player_eliminated',
+      );
+      expect(eliminated).toContainEqual({
+        userId: players[1].userId,
+        rank: 3,
+        remainingPlayers: 2,
+      });
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+
+      // future targeting must exclude the eliminated player
+      randomSpy.mockReturnValue(0);
+      injectActiveWord(session, 'w_after', 'after');
+      const after = await submitWord({
+        roomId: ROOM_ID,
+        playerId: players[0].userId,
+        wordId: 'w_after',
+        text: 'after',
+      });
+      expect(after.accepted).toBe(true);
+      if (after.accepted) expect(after.targetUserId).toBe(players[2].userId);
+
+      randomSpy.mockRestore();
+    });
+  });
+
+  describe('N-player — splash (word_missed) multi-elimination', () => {
+    it('can eliminate multiple players in the same tick, and they share the same rank', async () => {
+      const players = PLAYERS4;
+      const word = await startAndReachFirstSpawn(players);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      session.hp[players[0].userId] = 3;
+      session.hp[players[1].userId] = 3;
+      session.hp[players[2].userId] = 50;
+      session.hp[players[3].userId] = 50;
+      const activeWord = session.activeWords.get(word.wordId)!;
+      activeWord.landAt = Date.now();
+
+      await jest.advanceTimersByTimeAsync(200);
+
+      const eliminated = eventsNamed<PlayerEliminatedPayload>(
+        'player_eliminated',
+      );
+      expect(eliminated).toContainEqual({
+        userId: players[0].userId,
+        rank: 3,
+        remainingPlayers: 2,
+      });
+      expect(eliminated).toContainEqual({
+        userId: players[1].userId,
+        rank: 3,
+        remainingPlayers: 2,
+      });
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+      expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
+    });
+
+    it('a full simultaneous wipeout via splash ends the match as a mutual draw (winnerId null, all tied at rank 1)', async () => {
+      const players = PLAYERS3;
+      const word = await startAndReachFirstSpawn(players);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      // simulate an earlier elimination so only 2 survivors remain
+      session.eliminated.push({ userId: players[0].userId, rank: 3 });
+      session.hp[players[0].userId] = 0;
+      session.hp[players[1].userId] = 3;
+      session.hp[players[2].userId] = 3;
+      const activeWord = session.activeWords.get(word.wordId)!;
+      activeWord.landAt = Date.now();
+
+      await jest.advanceTimersByTimeAsync(200);
+
+      const missed = eventsNamed<WordMissedPayload>('word_missed');
+      expect(missed).toHaveLength(1);
+      expect(missed[0].hp[players[1].userId]).toBe(0);
+      expect(missed[0].hp[players[2].userId]).toBe(0);
+
+      const eliminated = eventsNamed<PlayerEliminatedPayload>(
+        'player_eliminated',
+      );
+      expect(eliminated).toContainEqual({
+        userId: players[1].userId,
+        rank: 1,
+        remainingPlayers: 0,
+      });
+      expect(eliminated).toContainEqual({
+        userId: players[2].userId,
+        rank: 1,
+        remainingPlayers: 0,
+      });
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended).toHaveLength(1);
+      expect(ended[0].winnerId).toBeNull();
+      expect(ended[0].reason).toBe('KO');
+      expect(ended[0].ranking).toEqual(
+        expect.arrayContaining([
+          { userId: players[1].userId, rank: 1 },
+          { userId: players[2].userId, rank: 1 },
+          { userId: players[0].userId, rank: 3 },
+        ]),
+      );
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+    });
+  });
+
+  describe('N-player — TIME_LIMIT competition ranking', () => {
+    it('ranks survivors by HP descending with tied HP sharing rank and the next distinct rank skipping ahead', async () => {
+      const players = PLAYERS4;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+      session.hp[players[0].userId] = 80;
+      session.hp[players[1].userId] = 50;
+      session.hp[players[2].userId] = 50;
+      session.hp[players[3].userId] = 10;
+
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended).toHaveLength(1);
+      expect(ended[0].winnerId).toBe(players[0].userId);
+      expect(ended[0].ranking).toEqual(
+        expect.arrayContaining([
+          { userId: players[0].userId, rank: 1 },
+          { userId: players[1].userId, rank: 2 },
+          { userId: players[2].userId, rank: 2 },
+          { userId: players[3].userId, rank: 4 }, // competition ranking: skips rank 3
+        ]),
+      );
+    });
+
+    it('yields winnerId null when 2+ players are tied at the top HP', async () => {
+      const players = PLAYERS3;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+      session.hp[players[0].userId] = 60;
+      session.hp[players[1].userId] = 60;
+      session.hp[players[2].userId] = 30;
+
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended[0].winnerId).toBeNull();
+      expect(ended[0].ranking).toEqual(
+        expect.arrayContaining([
+          { userId: players[0].userId, rank: 1 },
+          { userId: players[1].userId, rank: 1 },
+          { userId: players[2].userId, rank: 3 },
+        ]),
+      );
+    });
+  });
+
+  describe('N-player — disconnect grace-timeout elimination', () => {
+    it('with 3+ players, eliminating one who leaves 2+ survivors keeps the match IN_PROGRESS, and their later word_submit is rejected (PLAYER_ELIMINATED)', async () => {
+      const players = PLAYERS3;
+      const word = await startAndReachFirstSpawn(players);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session); // avoid the already-spawned word missing mid-grace-period
+
+      service.handleDisconnect(ROOM_ID, players[2].userId, server);
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+      expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
+      const eliminated = eventsNamed<PlayerEliminatedPayload>(
+        'player_eliminated',
+      );
+      expect(eliminated).toContainEqual({
+        userId: players[2].userId,
+        rank: 3,
+        remainingPlayers: 2,
+      });
+
+      const hpBefore = { ...service.getSession(ROOM_ID)!.hp };
+      const rejected = await submitWord({
+        roomId: ROOM_ID,
+        playerId: players[2].userId,
+        wordId: word.wordId,
+        text: word.text,
+      });
+
+      expect(rejected.accepted).toBe(false);
+      assertRejected(rejected);
+      expect(rejected.reason).toBe('PLAYER_ELIMINATED');
+      expect(rejected.submitRejected).toEqual({
+        wordId: word.wordId,
+        reason: 'NOT_FOUND',
+      });
+      expect(service.getSession(ROOM_ID)?.hp).toEqual(hpBefore);
+    });
+
+    it('cascading from 2 to 1 survivor ends the match with FORFEIT and the sole survivor as winner', async () => {
+      const players = PLAYERS3;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+      // simulate an earlier elimination leaving 2 survivors
+      session.eliminated.push({ userId: players[2].userId, rank: 3 });
+      session.hp[players[2].userId] = 0;
+
+      service.handleDisconnect(ROOM_ID, players[1].userId, server);
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      const eliminated = eventsNamed<PlayerEliminatedPayload>(
+        'player_eliminated',
+      );
+      expect(eliminated).toContainEqual({
+        userId: players[1].userId,
+        rank: 2,
+        remainingPlayers: 1,
+      });
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended).toContainEqual(
+        expect.objectContaining({
+          reason: 'FORFEIT',
+          winnerId: players[0].userId,
+        }),
+      );
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+    });
+  });
+
+  describe('N-player — eliminateOnLeave (leave_room, no grace timer)', () => {
+    it('immediately eliminates a player; with 2+ survivors remaining the match continues', async () => {
+      const players = PLAYERS3;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+
+      await service.eliminateOnLeave(ROOM_ID, players[2].userId, server);
+
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+      expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
+      expect(
+        eventsNamed<PlayerEliminatedPayload>('player_eliminated'),
+      ).toContainEqual({
+        userId: players[2].userId,
+        rank: 3,
+        remainingPlayers: 2,
+      });
+    });
+
+    it('immediately ends the match with FORFEIT (no timer needed) when it drops survivors to exactly 1', async () => {
+      await startMatch(PLAYERS2);
+      await jest.advanceTimersByTimeAsync(3000);
+
+      await service.eliminateOnLeave(ROOM_ID, HOST.userId, server);
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended).toContainEqual(
+        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
+      );
+      expect(service.getSession(ROOM_ID)).toBeUndefined();
+    });
+
+    it('is a no-op when there is no in-progress session for the room', async () => {
+      await expect(
+        service.eliminateOnLeave('no-such-room', 'someone', server),
+      ).resolves.toBeUndefined();
+      expect(eventsNamed('match_end')).toHaveLength(0);
+      expect(eventsNamed('player_eliminated')).toHaveLength(0);
+    });
+  });
+
+  describe('N-player — saveMatchHistory stats & MatchParticipant rows', () => {
+    it('unique winner: winner wins++, everyone else losses++, MatchParticipant rows carry correct finalHp/rank', async () => {
+      const players = PLAYERS3;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+      session.hp[players[0].userId] = 70;
+      session.hp[players[1].userId] = 40;
+      session.hp[players[2].userId] = 10;
+
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: players[0].userId },
+        'wins',
+        1,
+      );
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: players[1].userId },
+        'losses',
+        1,
+      );
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: players[2].userId },
+        'losses',
+        1,
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'draws',
+        expect.anything(),
+      );
+
+      const saved = mockMatchHistoryRepository.save.mock
+        .calls[0][0] as SavedMatchHistory;
+      expect(saved.participants).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            finalHp: 70,
+            rank: 1,
+            user: expect.objectContaining({ id: players[0].userId }),
+          }),
+          expect.objectContaining({
+            finalHp: 40,
+            rank: 2,
+            user: expect.objectContaining({ id: players[1].userId }),
+          }),
+          expect.objectContaining({
+            finalHp: 10,
+            rank: 3,
+            user: expect.objectContaining({ id: players[2].userId }),
+          }),
+        ]),
+      );
+    });
+
+    it('draw/mutual-wipe (no unique winner): only the tied rank-1 players draws++, clear lower ranks get losses++', async () => {
+      const players = PLAYERS3;
+      await startMatch(players);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      stopLoops(session);
+      session.hp[players[0].userId] = 50;
+      session.hp[players[1].userId] = 50;
+      session.hp[players[2].userId] = 20;
+
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      // players[0]/[1] are tied for 1st — draws only, no wins/losses
+      for (const p of [players[0], players[1]]) {
+        expect(mockUserRepository.increment).toHaveBeenCalledWith(
+          { id: p.userId },
+          'draws',
+          1,
+        );
+      }
+      // players[2] unambiguously finished last — losses, not draws
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: players[2].userId },
+        'losses',
+        1,
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        { id: players[2].userId },
+        'draws',
+        expect.anything(),
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'wins',
+        expect.anything(),
+      );
+
+      const saved = mockMatchHistoryRepository.save.mock
+        .calls[0][0] as SavedMatchHistory;
+      expect(saved.winner).toBeNull();
     });
   });
 });
