@@ -427,19 +427,18 @@ export class AcidRainGateway
 
     const { roomId } = this.parseLeaveSpectatePayload(payload);
 
-    await client.leave(`game:${roomId}`);
-    (client.data as GameSocketData).spectatingRoomId = undefined;
-
-    this.chatGateway
-      .sendSystemMessage(
-        roomId,
-        `${nickname ?? '관전자'} 님이 관전을 종료했습니다.`,
-      )
+    // 메시지 전송을 먼저 완료한 뒤 룸에서 나간다 — 순서를 바꾸면 spectator 소켓이
+    // 이미 룸을 떠난 후에 broadcast가 나가 spectator 본인이 퇴장 메시지를 못 받는다.
+    await this.chatGateway
+      .sendSystemMessage(roomId, `${nickname ?? '관전자'} 님이 관전을 종료했습니다.`)
       .catch((err) =>
         this.logger.error(
           `Failed to send spectator-leave system message: ${String(err)}`,
         ),
       );
+
+    await client.leave(`game:${roomId}`);
+    (client.data as GameSocketData).spectatingRoomId = undefined;
   }
 
   // ─── typing_progress (#71) ────────────────────────────────────────────────
