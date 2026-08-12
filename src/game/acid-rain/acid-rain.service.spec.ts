@@ -1337,6 +1337,40 @@ describe('AcidRainService', () => {
     });
   });
 
+  describe('spectator snapshot (#70)', () => {
+    it('returns a state_sync-shaped snapshot while the match is in progress', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(2000); // one word spawned
+
+      const snapshot = service.getSpectatorSnapshot(ROOM_ID);
+
+      expect(snapshot).not.toBeNull();
+      expect(snapshot?.roomId).toBe(ROOM_ID);
+      expect(snapshot?.hp).toEqual({
+        [HOST.userId]: 100,
+        [GUEST.userId]: 100,
+      });
+      expect(snapshot?.participants).toEqual([
+        expect.objectContaining({ participantId: HOST.userId, type: 'HUMAN' }),
+        expect.objectContaining({ participantId: GUEST.userId, type: 'HUMAN' }),
+      ]);
+      expect(snapshot?.activeWords.length).toBeGreaterThan(0);
+    });
+
+    it('returns null before the match starts (no session yet)', () => {
+      expect(service.getSpectatorSnapshot(ROOM_ID)).toBeNull();
+    });
+
+    it('returns null once the match has ended', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      expect(service.getSpectatorSnapshot(ROOM_ID)).toBeNull();
+    });
+  });
+
   describe('endMatch persistence', () => {
     it('saves MatchHistory with finalHp/wordsTyped/durationSec and updates wins/losses', async () => {
       await service.startMatch(ROOM_ID, HOST, GUEST, server);
