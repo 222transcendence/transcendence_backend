@@ -1463,10 +1463,26 @@ describe('AcidRainService', () => {
       expect(ended[0]).toEqual(
         expect.objectContaining({ reason: 'TIME_LIMIT', winnerId: null }),
       );
-      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: HOST.userId }, 'draws', 1);
-      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: GUEST.userId }, 'draws', 1);
-      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'wins', 1);
-      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'losses', 1);
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: HOST.userId },
+        'draws',
+        1,
+      );
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: GUEST.userId },
+        'draws',
+        1,
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'wins',
+        1,
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'losses',
+        1,
+      );
     });
 
     it('runs match finalization side effects only once for repeated endMatch calls', async () => {
@@ -2015,6 +2031,50 @@ describe('AcidRainService', () => {
   });
 
   describe('#136 AI practice history', () => {
+    it('provides an outbound opponent_typing callback without exposing wordId', async () => {
+      let registration:
+        | {
+            emitTypingProgress: (
+              participantId: string,
+              partialText: string,
+            ) => void;
+          }
+        | undefined;
+      mockAiScheduler.registerRoom.mockImplementation((value: unknown) => {
+        registration = value as {
+          emitTypingProgress: (
+            participantId: string,
+            partialText: string,
+          ) => void;
+        };
+      });
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:room-1',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+
+      registration!.emitTypingProgress('ai:room-1', '가');
+
+      expect(emitSpy).toHaveBeenCalledWith('opponent_typing', {
+        participantId: 'ai:room-1',
+        partialText: '가',
+      });
+      expect(emitSpy.mock.calls.at(-1)?.[1]).not.toHaveProperty('wordId');
+    });
+
     it('registers and cleans the AI scheduler through finalizeMatch', async () => {
       await startParticipants(
         [

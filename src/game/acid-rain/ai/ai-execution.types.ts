@@ -55,10 +55,18 @@ export interface AiExecutionTask {
   generation: number;
   token: string;
   timer: ReturnType<typeof setTimeout> | null;
+  lastEmittedPartialText: string;
+  progressWasVisible: boolean;
+  progressCleared: boolean;
+  nextEventAtMs: number | null;
 }
 
 export interface AiSubmissionCallback {
   (input: JudgeWordSubmitInput): Promise<JudgeWordSubmitResult>;
+}
+
+export interface AiTypingProgressCallback {
+  (participantId: string, partialText: string): void;
 }
 
 export interface AiSchedulerRegistration {
@@ -66,6 +74,7 @@ export interface AiSchedulerRegistration {
   aiParticipantId: string;
   difficulty: AiDifficulty;
   submitWord: AiSubmissionCallback;
+  emitTypingProgress: AiTypingProgressCallback;
 }
 
 export interface AiStateChange {

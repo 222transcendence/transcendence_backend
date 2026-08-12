@@ -27,6 +27,42 @@ function taskWithRandom(values: number[]) {
 }
 
 describe('AiExecutor timeline progress', () => {
+  it('maps English keystrokes to monotonically increasing partial text', () => {
+    const { executor, task } = taskWithRandom([0.5, 1, 1, 1]);
+    const keys = task.timeline.filter(
+      (segment) => segment.kind === 'KEYSTROKE',
+    );
+    expect(executor.partialText(task, keys[0].completionMs)).toBe('a');
+    expect(executor.partialText(task, keys[1].completionMs)).toBe('ab');
+    expect(executor.partialText(task, keys[2].completionMs)).toBe('abc');
+  });
+
+  it('only changes Korean partial text at complete syllable boundaries', () => {
+    const clock: Clock = { now: () => 0 };
+    const random: RandomSource = { next: () => 1 };
+    const executor = new AiExecutor(clock, random);
+    const task = executor.createTask(
+      'room',
+      {
+        wordId: 'korean',
+        text: '가나',
+        keystrokes: 4,
+        landAtMs: 5000,
+        damage: 1,
+      },
+      profile(),
+      1,
+      'token',
+    );
+    const keys = task.timeline.filter(
+      (segment) => segment.kind === 'KEYSTROKE',
+    );
+    expect(executor.partialText(task, keys[0].completionMs)).toBe('');
+    expect(executor.partialText(task, keys[1].completionMs)).toBe('가');
+    expect(executor.partialText(task, keys[2].completionMs)).toBe('가');
+    expect(executor.partialText(task, keys[3].completionMs)).toBe('가나');
+  });
+
   it('reports NOT_STARTED during reaction delay', () => {
     const { executor, task } = taskWithRandom([1, 1, 1]);
     expect(executor.currentTarget(task, task.reactionEndsAtMs - 1)).toEqual({

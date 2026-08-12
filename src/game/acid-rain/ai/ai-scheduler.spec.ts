@@ -49,6 +49,7 @@ function setup() {
   const random: RandomSource = { next: () => 1 };
   const executor = new AiExecutor(clock, random);
   const submitted: JudgeWordSubmitInput[] = [];
+  const progress: Array<{ participantId: string; partialText: string }> = [];
   const scheduler = new AiScheduler(
     executor,
     undefined,
@@ -65,14 +66,20 @@ function setup() {
       submitted.push(input);
       return Promise.resolve(accepted(input));
     },
+    emitTypingProgress: (participantId, partialText) => {
+      progress.push({ participantId, partialText });
+    },
   });
   return {
     scheduler,
     submitted,
     callbacks,
     delays,
-    runTimers: () => callbacks.splice(0).forEach((callback) => callback()),
+    runTimers: () => {
+      while (callbacks.length > 0) callbacks.shift()!();
+    },
     setNow: (value: number) => (now = value),
+    progress,
   };
 }
 
@@ -85,6 +92,168 @@ const word = {
 };
 
 describe('AiScheduler lifecycle and race guards', () => {
+  it('does not emit progress during reaction and suppresses duplicate partial text', async () => {
+    const test = setup();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    expect(test.progress).toHaveLength(0);
+    test.runTimers();
+    await Promise.resolve();
+    expect(test.progress.map((event) => event.partialText)).toEqual([
+      'a',
+      'ab',
+      'abc',
+      '',
+    ]);
+  });
+
+  it('emits Korean progress only when a syllable boundary changes', async () => {
+    const test = setup();
+    const koreanWord = { ...word, text: '가나', keystrokes: 4 };
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [koreanWord],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    test.runTimers();
+    await Promise.resolve();
+    expect(test.progress.map((event) => event.partialText)).toEqual([
+      '가',
+      '가나',
+      '',
+    ]);
+  });
+
+  it('clears only the switched task before the new task starts progress', () => {
+    const test = setup();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    test.callbacks.shift()!();
+    const beforeSwitch = test.progress.length;
+    const betterWord = { ...word, wordId: 'w2', text: 'xyz', damage: 100 };
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 2,
+      activeWords: [word, betterWord],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    expect(test.progress.slice(beforeSwitch)).toEqual([
+      { participantId: 'ai:room', partialText: '' },
+    ]);
+    expect(test.scheduler.getTask('room')?.wordId).toBe('w2');
+  });
+
+  it('keeps progress and timer on KEEP when another word is cleared', () => {
+    const test = setup();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    const task = test.scheduler.getTask('room');
+    const timer = task?.timer;
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 2,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'CLEAR',
+    });
+    expect(test.scheduler.getTask('room')).toBe(task);
+    expect(test.scheduler.getTask('room')?.timer).toBe(timer);
+    expect(test.progress).toHaveLength(0);
+  });
+
+  it('clears the current target exactly once when it disappears', () => {
+    const test = setup();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    test.callbacks.shift()!();
+    const beforeClear = test.progress.length;
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 2,
+      activeWords: [],
+      status: 'IN_PROGRESS',
+      event: 'CLEAR',
+    });
+    expect(test.progress.slice(beforeClear)).toEqual([
+      { participantId: 'ai:room', partialText: '' },
+    ]);
+    expect(test.scheduler.getTask('room')).toBeUndefined();
+  });
+
+  it('does not let an old submit settle clear a new task display', async () => {
+    const test = setup();
+    let settle!: () => void;
+    const pending = new Promise<ReturnType<typeof accepted>>((resolve) => {
+      settle = () =>
+        resolve(
+          accepted({
+            roomId: 'room',
+            playerId: 'ai:room',
+            wordId: 'w1',
+            text: 'abc',
+            attemptId: 'old',
+          }),
+        );
+    });
+    const submit = jest.fn(() => pending);
+    test.scheduler.destroy('room');
+    test.scheduler.registerRoom({
+      roomId: 'room',
+      aiParticipantId: 'ai:room',
+      difficulty: 'NORMAL',
+      submitWord: submit,
+      emitTypingProgress: (participantId, partialText) => {
+        test.progress.push({ participantId, partialText });
+      },
+    });
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    test.runTimers();
+    await Promise.resolve();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 2,
+      activeWords: [{ ...word, wordId: 'w2', text: 'xyz' }],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    const newProgressCount = test.progress.length;
+    settle();
+    await Promise.resolve();
+    expect(test.progress.length).toBeGreaterThanOrEqual(newProgressCount);
+    expect(test.progress.slice(newProgressCount)).not.toContainEqual({
+      participantId: 'ai:room',
+      partialText: '',
+    });
+  });
   it('keeps the existing task and timer for KEEP', () => {
     const test = setup();
     test.scheduler.onStateChange({
@@ -127,7 +296,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     oldCallback();
     await Promise.resolve();
     expect(test.submitted).toHaveLength(0);
-    test.callbacks[1]();
+    test.runTimers();
     await Promise.resolve();
     expect(test.submitted).toHaveLength(1);
     expect(test.submitted[0].wordId).toBe('w2');
@@ -225,6 +394,7 @@ describe('AiScheduler lifecycle and race guards', () => {
       aiParticipantId: 'ai:room',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
+      emitTypingProgress: () => undefined,
     });
     abandoning.onStateChange({
       roomId: 'room',
@@ -270,6 +440,7 @@ describe('AiScheduler lifecycle and race guards', () => {
       aiParticipantId: 'ai:room',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
+      emitTypingProgress: () => undefined,
     });
     const change = {
       roomId: 'room',
@@ -325,6 +496,7 @@ describe('AiScheduler lifecycle and race guards', () => {
       aiParticipantId: 'ai:room',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
+      emitTypingProgress: () => undefined,
     });
     scheduler.onStateChange({
       roomId: 'room',
@@ -362,6 +534,7 @@ describe('AiScheduler lifecycle and race guards', () => {
       aiParticipantId: 'ai:room',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
+      emitTypingProgress: () => undefined,
     });
     scheduler.onStateChange({
       roomId: 'room',

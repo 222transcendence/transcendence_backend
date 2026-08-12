@@ -87,6 +87,14 @@ export class AiScheduler {
     if (!state || state.destroyed || change.status !== 'IN_PROGRESS') return;
     if (change.stateVersion <= state.lastStateVersion) return;
     state.lastStateVersion = change.stateVersion;
+
+    if (
+      state.task &&
+      !change.activeWords.some((word) => word.wordId === state.task?.wordId)
+    ) {
+      this.invalidateTask(state);
+    }
+
     state.latestActiveWords = change.activeWords;
     state.latestStatus = change.status;
     state.abandonedWordIds.clear();
@@ -169,7 +177,10 @@ export class AiScheduler {
         this.invalidateTask(state);
         return;
       }
-      if (decision.action === 'NO_TARGET') return;
+      if (decision.action === 'NO_TARGET') {
+        this.invalidateTask(state);
+        return;
+      }
       if (
         !decision.targetWordId ||
         !this.executor.actionRequiresTask(decision.action)
@@ -211,22 +222,39 @@ export class AiScheduler {
       generation,
       token,
     );
-    const delay = Math.max(
-      profile.config.minimumAsyncDelayMs,
-      this.executor.completionMs(task) - task.selectedAtMs,
-    );
-    const timer = this.timer.setTimeout(() => {
-      void this.execute(state.roomId, generation, token, word.wordId);
-    }, delay);
-    task.timer = timer;
     state.task = task;
+    this.scheduleNextTaskEvent(state, task, generation, token);
   }
 
-  private async execute(
+  private scheduleNextTaskEvent(
+    state: SchedulerState,
+    task: AiExecutionTask,
+    generation: number,
+    token: string,
+    afterMs = this.clock.now(),
+  ): void {
+    const nextAtMs = this.executor.nextProgressAtMs(task, afterMs);
+    if (nextAtMs === undefined) return;
+    task.nextEventAtMs = nextAtMs;
+    task.timer = this.timer.setTimeout(
+      () =>
+        void this.handleTaskEvent(
+          state.roomId,
+          generation,
+          token,
+          task.wordId,
+          nextAtMs,
+        ),
+      Math.max(0, nextAtMs - afterMs),
+    );
+  }
+
+  private async handleTaskEvent(
     roomId: string,
     generation: number,
     token: string,
     wordId: string,
+    eventAtMs: number,
   ): Promise<void> {
     const state = this.rooms.get(roomId);
     if (!state || !state.task || state.destroyed || state.paused) return;
@@ -239,9 +267,23 @@ export class AiScheduler {
     ) {
       return;
     }
-    state.task = undefined;
-    const active = this.lastActiveWord(state, wordId);
-    if (!active) return;
+    task.timer = null;
+    task.nextEventAtMs = null;
+    const completionMs = this.executor.completionMs(task);
+    if (eventAtMs < completionMs) {
+      this.emitProgress(
+        state,
+        task,
+        this.executor.partialText(task, eventAtMs),
+      );
+      if (this.isCurrentTask(state, task, generation, token)) {
+        this.scheduleNextTaskEvent(state, task, generation, token, eventAtMs);
+      }
+      return;
+    }
+    if (!this.lastActiveWord(state, wordId)) return;
+    this.emitProgress(state, task, task.text);
+    if (!this.isCurrentTask(state, task, generation, token)) return;
     const input: JudgeWordSubmitInput = {
       roomId,
       playerId: state.aiParticipantId,
@@ -250,6 +292,10 @@ export class AiScheduler {
       attemptId: `${roomId}:${token}`,
     };
     await state.submitWord(input);
+    if (this.isCurrentTask(state, task, generation, token)) {
+      this.clearProgress(state, task);
+      state.task = undefined;
+    }
   }
 
   private lastActiveWord(
@@ -270,8 +316,48 @@ export class AiScheduler {
   }
 
   private invalidateTask(state: SchedulerState): void {
+    const task = state.task;
+    if (task?.timer) this.timer.clearTimeout(task.timer);
+    if (task) this.clearProgress(state, task);
     state.generation += 1;
-    if (state.task?.timer) this.timer.clearTimeout(state.task.timer);
     state.task = undefined;
+  }
+
+  private emitProgress(
+    state: SchedulerState,
+    task: AiExecutionTask,
+    partialText: string,
+  ): void {
+    if (!partialText || partialText === task.lastEmittedPartialText) return;
+    if (!this.isCurrentTask(state, task, task.generation, task.token)) return;
+    task.lastEmittedPartialText = partialText;
+    task.progressWasVisible = true;
+    state.emitTypingProgress(state.aiParticipantId, partialText);
+  }
+
+  private clearProgress(state: SchedulerState, task: AiExecutionTask): void {
+    if (!task.progressWasVisible || task.progressCleared) return;
+    task.progressCleared = true;
+    if (this.isCurrentTask(state, task, task.generation, task.token)) {
+      state.emitTypingProgress(state.aiParticipantId, '');
+    }
+  }
+
+  private isCurrentTask(
+    state: SchedulerState,
+    task: AiExecutionTask,
+    generation: number,
+    token: string,
+  ): boolean {
+    return (
+      state.task === task &&
+      task.generation === generation &&
+      task.token === token &&
+      state.generation === generation &&
+      !state.destroyed &&
+      !state.paused &&
+      state.latestStatus === 'IN_PROGRESS' &&
+      Boolean(this.lastActiveWord(state, task.wordId))
+    );
   }
 }

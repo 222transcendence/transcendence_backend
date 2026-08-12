@@ -1,5 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AiExecutionProfile } from '../../player-model';
+import { countKeystrokes } from '../keystroke-count';
 import type { UtilityAction, CurrentTarget } from './state-evaluator';
 import type {
   AiExecutionTask,
@@ -102,7 +103,38 @@ export class AiExecutor {
       generation,
       token,
       timer,
+      lastEmittedPartialText: '',
+      progressWasVisible: false,
+      progressCleared: false,
+      nextEventAtMs: null,
     };
+  }
+
+  partialText(task: AiExecutionTask, nowMs: number): string {
+    if (nowMs < task.reactionEndsAtMs) return '';
+    const completed = this.completedKeystrokes(task, nowMs);
+    if (completed >= task.totalKeystrokes) return task.text;
+
+    let consumed = 0;
+    let partial = '';
+    for (const character of Array.from(task.text)) {
+      const characterKeystrokes = this.characterKeystrokes(character);
+      if (consumed + characterKeystrokes > completed) break;
+      partial += character;
+      consumed += characterKeystrokes;
+    }
+    return partial;
+  }
+
+  nextProgressAtMs(task: AiExecutionTask, nowMs: number): number | undefined {
+    return task.timeline
+      .filter(
+        (segment) =>
+          segment.kind === 'KEYSTROKE' && segment.completionMs > nowMs,
+      )
+      .reduce<
+        number | undefined
+      >((next, segment) => (next === undefined ? segment.completionMs : Math.min(next, segment.completionMs)), undefined);
   }
 
   currentTarget(
@@ -116,16 +148,7 @@ export class AiExecutor {
       };
     }
 
-    const completed = new Set<number>();
-    for (const segment of task.timeline) {
-      if (segment.kind === 'KEYSTROKE' && segment.completionMs <= nowMs) {
-        completed.add(segment.keystrokeIndex);
-      }
-    }
-    const completedCount = Math.min(
-      task.totalKeystrokes,
-      Math.max(0, completed.size),
-    );
+    const completedCount = this.completedKeystrokes(task, nowMs);
     return {
       wordId: task.wordId,
       execution: {
@@ -143,6 +166,24 @@ export class AiExecutor {
       (latest, segment) => Math.max(latest, segment.completionMs),
       task.typingStartedAtMs,
     );
+  }
+
+  private completedKeystrokes(task: AiExecutionTask, nowMs: number): number {
+    const completed = new Set<number>();
+    for (const segment of task.timeline) {
+      if (segment.kind === 'KEYSTROKE' && segment.completionMs <= nowMs) {
+        completed.add(segment.keystrokeIndex);
+      }
+    }
+    return Math.min(task.totalKeystrokes, Math.max(0, completed.size));
+  }
+
+  private characterKeystrokes(character: string): number {
+    try {
+      return countKeystrokes(character);
+    } catch {
+      return 1;
+    }
   }
 
   actionRequiresTask(action: UtilityAction): boolean {
