@@ -19,9 +19,10 @@ export class ChatMessage {
   @PrimaryGeneratedColumn('uuid')
   id: string;
 
-  @ManyToOne(() => User, { onDelete: 'CASCADE', eager: true })
+  // SYSTEM 메시지는 실제 유저가 보내지 않으므로 null 허용
+  @ManyToOne(() => User, { onDelete: 'SET NULL', eager: true, nullable: true })
   @JoinColumn({ name: 'senderId' })
-  sender: User;
+  sender: User | null;
 
   @Column({ type: 'text' })
   content: string;

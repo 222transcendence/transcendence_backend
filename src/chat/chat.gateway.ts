@@ -9,7 +9,6 @@ import {
   WsException,
 } from '@nestjs/websockets';
 import { Server, Socket } from 'socket.io';
-import { randomUUID } from 'crypto';
 import { Logger, UsePipes, ValidationPipe } from '@nestjs/common';
 import { ValidationError } from 'class-validator';
 import { JwtService } from '@nestjs/jwt';
@@ -103,12 +102,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       dto.type ?? MessageType.NORMAL,
     );
 
+    // saveMessage()는 인증된 user.id로 항상 sender를 채우므로 이 경로에서는 null이 될 수 없다
+    const sender = saved.sender!;
     const payload = {
       id: saved.id,
       sender: {
-        id: saved.sender.id,
-        nickname: saved.sender.nickname,
-        avatar: saved.sender.avatar,
+        id: sender.id,
+        nickname: sender.nickname,
+        avatar: sender.avatar,
       },
       content: saved.content,
       roomId: saved.roomId,
@@ -174,14 +175,18 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  sendSystemMessage(roomId: string, content: string): void {
+  async sendSystemMessage(roomId: string, content: string): Promise<void> {
+    // 저장해두지 않으면, 이 메시지가 방금 생성한 방으로 막 진입해 채팅 소켓을
+    // 아직 연결하지 못한 클라이언트(예: 방을 막 만든 호스트 본인)는 놓친다 —
+    // 이후 히스토리 조회(getHistory)로 복구할 수 있도록 항상 영속화한다.
+    const saved = await this.chatService.saveSystemMessage(roomId, content);
     this.server.emit('receive_message', {
-      id: randomUUID(),
-      content,
-      roomId,
-      type: 'SYSTEM',
+      id: saved.id,
+      content: saved.content,
+      roomId: saved.roomId,
+      type: saved.type,
       sender: { id: 'system', nickname: 'SYSTEM', avatar: null },
-      createdAt: new Date().toISOString(),
+      createdAt: saved.createdAt.toISOString(),
     });
   }
 
