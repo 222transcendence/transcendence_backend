@@ -96,6 +96,17 @@ export interface ActiveWord extends Omit<WordSpawnPayload, 'landAt'> {
   landAt: number;
 }
 
+export interface TypingProgressPayload {
+  roomId: string;
+  /** 현재 입력 중인 텍스트 (빈 문자열이면 입력 초기화) */
+  partialText: string;
+}
+
+export interface OpponentTypingEventPayload {
+  participantId: string;
+  partialText: string;
+}
+
 export interface JoinRoomPayload {
   roomId: string;
 }

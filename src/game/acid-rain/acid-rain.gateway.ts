@@ -27,6 +27,7 @@ import type {
   MatchReadyEventPayload,
   ParticipantState,
   SpectateRoomPayload,
+  TypingProgressPayload,
   WordSubmitPayload,
 } from './acid-rain.interface';
 import { RoomStatus, type GameRoom } from '../game.interface';
@@ -434,6 +435,29 @@ export class AcidRainGateway
           `Failed to send spectator-leave system message: ${String(err)}`,
         ),
       );
+  }
+
+  // ─── typing_progress (#71) ────────────────────────────────────────────────
+
+  @SubscribeMessage('typing_progress')
+  handleTypingProgress(
+    @ConnectedSocket() client: Socket,
+    @MessageBody() payload: TypingProgressPayload,
+  ): void {
+    const { userId, spectatingRoomId } = client.data as GameSocketData;
+    if (!userId || spectatingRoomId) return;
+
+    if (
+      !isRecord(payload) ||
+      !isNonEmptyString(payload.roomId) ||
+      typeof payload.partialText !== 'string'
+    ) return;
+
+    const { roomId, partialText } = payload;
+    const session = this.acidRainService.getSession(roomId);
+    if (!session || session.status !== 'IN_PROGRESS') return;
+
+    client.to(`game:${roomId}`).emit('opponent_typing', { participantId: userId, partialText });
   }
 
   // ─── word_submit ──────────────────────────────────────────────────────────
