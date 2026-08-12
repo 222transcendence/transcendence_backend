@@ -18,6 +18,7 @@ import { UserService } from '../user/user.service';
 import { FriendService } from '../friend/friend.service';
 import { RedisService } from '../redis/redis.service';
 import { MessageType } from './entities/chat-message.entity';
+import { websocketConnections } from '../metrics/metrics.registry';
 
 export type OnlineStatus = 'ONLINE' | 'OFFLINE' | 'IN_GAME';
 
@@ -55,6 +56,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       this.trackSocket(user.id, client.id);
       await this.setUserStatus(user.id, 'ONLINE');
       await this.notifyFriends(user.id, 'ONLINE');
+      websocketConnections.inc({ namespace: 'chat' });
 
       this.logger.log(`Client connected: ${client.id} (user: ${user.nickname})`);
     } catch {
@@ -70,6 +72,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
 
     if (user) {
       this.untrackSocket(user.id, client.id);
+      websocketConnections.dec({ namespace: 'chat' });
       // Only go OFFLINE when all sockets for this user are gone
       if (!this.userSockets.has(user.id)) {
         await this.setUserStatus(user.id, 'OFFLINE');
@@ -99,12 +102,14 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
       dto.type ?? MessageType.NORMAL,
     );
 
+    // saveMessage()는 인증된 user.id로 항상 sender를 채우므로 이 경로에서는 null이 될 수 없다
+    const sender = saved.sender!;
     const payload = {
       id: saved.id,
       sender: {
-        id: saved.sender.id,
-        nickname: saved.sender.nickname,
-        avatar: saved.sender.avatar,
+        id: sender.id,
+        nickname: sender.nickname,
+        avatar: sender.avatar,
       },
       content: saved.content,
       roomId: saved.roomId,
@@ -152,7 +157,7 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     }
   }
 
-  private async notifyFriends(userId: string, status: OnlineStatus) {
+  async notifyFriends(userId: string, status: OnlineStatus) {
     try {
       const friends = await this.friendService.getFriends(userId);
       const payload = { userId, status };
@@ -168,6 +173,21 @@ export class ChatGateway implements OnGatewayConnection, OnGatewayDisconnect {
     } catch {
       this.logger.warn(`Failed to notify friends for user ${userId}`);
     }
+  }
+
+  async sendSystemMessage(roomId: string, content: string): Promise<void> {
+    // 저장해두지 않으면, 이 메시지가 방금 생성한 방으로 막 진입해 채팅 소켓을
+    // 아직 연결하지 못한 클라이언트(예: 방을 막 만든 호스트 본인)는 놓친다 —
+    // 이후 히스토리 조회(getHistory)로 복구할 수 있도록 항상 영속화한다.
+    const saved = await this.chatService.saveSystemMessage(roomId, content);
+    this.server.emit('receive_message', {
+      id: saved.id,
+      content: saved.content,
+      roomId: saved.roomId,
+      type: saved.type,
+      sender: { id: 'system', nickname: 'SYSTEM', avatar: null },
+      createdAt: saved.createdAt.toISOString(),
+    });
   }
 
   private extractToken(client: Socket): string {

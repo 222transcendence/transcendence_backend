@@ -4,6 +4,8 @@ import { Friend } from './friend/entities/friend.entity';
 import { DbQueryLogger } from './metrics/db-query.logger';
 import { ChatMessage } from './chat/entities/chat-message.entity';
 import { MatchHistory } from './game/entities/match-history.entity';
+import { MatchParticipant } from './game/entities/match-participant.entity';
+import { WordDictionary } from './word-dictionary/entities/word-dictionary.entity';
 import * as dotenv from 'dotenv';
 
 dotenv.config();
@@ -18,7 +20,7 @@ export const AppDataSource = new DataSource({
   username: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
   database: process.env.DB_NAME,
-  entities: [User, Friend, ChatMessage, MatchHistory],
+  entities: [User, Friend, ChatMessage, MatchHistory, MatchParticipant, WordDictionary],
   migrations: [__dirname + '/migrations/*.ts', __dirname + '/migrations/*.js'],
   synchronize: false,
   logger: new DbQueryLogger(),
