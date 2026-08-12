@@ -49,7 +49,6 @@ interface MatchEndPayload {
 }
 interface OpponentDisconnectedPayload {
   userId: string;
-  graceMs: number;
 }
 interface OpponentReconnectedPayload {
   userId: string;
@@ -1663,62 +1662,52 @@ describe('AcidRainService', () => {
     });
   });
 
-  describe('disconnect / reconnect', () => {
-    it('starts a 30s grace period and forfeits to the opponent if no reconnect', async () => {
-      await service.startMatch(ROOM_ID, HOST, GUEST, server);
-      await jest.advanceTimersByTimeAsync(3000);
-
-      service.handleDisconnect(ROOM_ID, HOST.userId, server);
-      expect(
-        eventsNamed<OpponentDisconnectedPayload>('opponent_disconnected'),
-      ).toContainEqual({
-        userId: HOST.userId,
-        graceMs: 30_000,
-      });
-
-      await jest.advanceTimersByTimeAsync(30_000);
-
-      const ended = eventsNamed<MatchEndPayload>('match_end');
-      expect(ended).toContainEqual(
-        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
-      );
-    });
-
-    it('retries FORFEIT finalization failure with the original override winner', async () => {
+  describe('disconnect / reconnect (#161 — no forced forfeit on disconnect)', () => {
+    it('broadcasts opponent_disconnected without a grace deadline and does not end the match even long after the old 30s window', async () => {
       await service.startMatch(ROOM_ID, HOST, GUEST, server);
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
       if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
       if (session.missLoopTimer) clearInterval(session.missLoopTimer);
-      mockRedisService.del
-        .mockRejectedValueOnce(new Error('redis down'))
-        .mockImplementation((key: string) => {
-          delete redisStore[key];
-          return Promise.resolve();
-        });
-      emitSpy.mockClear();
 
       service.handleDisconnect(ROOM_ID, HOST.userId, server);
-      await jest.advanceTimersByTimeAsync(30_000);
-      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
-      expect(eventsNamed<MatchEndPayload>('match_end')).toEqual([
-        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
-      ]);
+      expect(
+        eventsNamed<OpponentDisconnectedPayload>('opponent_disconnected'),
+      ).toContainEqual({ userId: HOST.userId });
 
-      await jest.advanceTimersByTimeAsync(1000);
+      await jest.advanceTimersByTimeAsync(60_000);
 
-      expect(service.getSession(ROOM_ID)).toBeUndefined();
-      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
-      const saved = mockMatchHistoryRepository.save.mock.calls[0][0] as {
-        winner: { id: string } | null;
-        matchData: { reason: string };
-      };
-      expect(saved.winner?.id).toBe(GUEST.userId);
-      expect(saved.matchData.reason).toBe('FORFEIT');
-      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
+      expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
+      const host = session.participants.find(
+        (participant) => participant.participantId === HOST.userId,
+      )!;
+      expect(host.status).toBe('ACTIVE');
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
     });
 
-    it('cancels the grace timer and sends state_sync on reconnect within the grace period', async () => {
+    it('still lets a disconnected participant be targeted and damaged by others', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      service.handleDisconnect(ROOM_ID, GUEST.userId, server);
+      randomMock.mockReturnValue(0);
+      addActiveWord(ROOM_ID, 'w-hit-disconnected', '공격');
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'w-hit-disconnected',
+        text: '공격',
+      });
+
+      expect(result.accepted && result.wordCleared.targetParticipantId).toBe(
+        GUEST.userId,
+      );
+      expect(
+        result.accepted && result.wordCleared.hp[GUEST.userId],
+      ).toBeLessThan(100);
+    });
+
+    it('sends state_sync and opponent_reconnected on reconnect', async () => {
       await service.startMatch(ROOM_ID, HOST, GUEST, server);
       await jest.advanceTimersByTimeAsync(3000);
       await jest.advanceTimersByTimeAsync(2000); // one word spawned
@@ -1761,14 +1750,6 @@ describe('AcidRainService', () => {
       expect(typeof activeWord.landAt).toBe('string');
       // no tier leaking into the reconnect payload
       expect(activeWord).not.toHaveProperty('tier');
-
-      // grace timer cancelled: advancing past the original 30s must NOT forfeit
-      await jest.advanceTimersByTimeAsync(30_000);
-      expect(
-        eventsNamed<MatchEndPayload>('match_end').some(
-          (e) => e.reason === 'FORFEIT',
-        ),
-      ).toBe(false);
     });
 
     const fourPlayers: ParticipantPublic[] = [
@@ -1798,82 +1779,21 @@ describe('AcidRainService', () => {
       },
     ];
 
-    it('eliminates only the disconnected participant in a 4-player match and lets the rest continue (#157)', async () => {
+    it('does not eliminate anyone in a 4-player match when one participant disconnects (#161)', async () => {
       await startParticipants(fourPlayers);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
 
       service.handleDisconnect(ROOM_ID, 'player-3', server);
-      await jest.advanceTimersByTimeAsync(30_000);
+      await jest.advanceTimersByTimeAsync(60_000);
 
-      const session = service.getSession(ROOM_ID)!;
-      expect(session.status).not.toBe('FINISHED');
-      const eliminated = session.participants.find(
-        (participant) => participant.participantId === 'player-3',
-      )!;
-      expect(eliminated.status).toBe('ELIMINATED');
-      expect(eliminated.hp).toBe(0);
-      // 나머지 세 명은 여전히 생존 — 매치 전체가 끝나지 않는다.
       expect(
         session.participants.filter(
           (participant) => participant.status === 'ACTIVE',
         ),
-      ).toHaveLength(3);
+      ).toHaveLength(4);
       expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
-      // 나머지 참가자들 화면이 즉시 갱신되도록 state_sync가 브로드캐스트된다.
-      const syncs = eventsNamed<StateSyncPayload>('state_sync');
-      expect(syncs.length).toBeGreaterThan(0);
-    });
-
-    it('ends the match with the correct winner once eliminations bring a 4-player match down to one survivor (#157)', async () => {
-      await startParticipants(fourPlayers);
-      const session = service.getSession(ROOM_ID)!;
-      // 스폰/미스 루프를 멈춰서 남은 테스트 시간 동안 자연 발생하는 데미지로 결과가
-      // 흔들리지 않게 한다(다른 disconnect 테스트들과 동일한 패턴).
-      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
-      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
-      for (const id of ['player-3', 'player-4']) {
-        const participant = session.participants.find(
-          (candidate) => candidate.participantId === id,
-        )!;
-        participant.hp = 0;
-        participant.status = 'ELIMINATED';
-      }
-      session.participants.find(
-        (candidate) => candidate.participantId === GUEST.userId,
-      )!.hp = 0;
-
-      service.handleDisconnect(ROOM_ID, GUEST.userId, server);
-      await jest.advanceTimersByTimeAsync(30_000);
-
-      const ended = eventsNamed<MatchEndPayload>('match_end');
-      expect(ended).toContainEqual(
-        expect.objectContaining({ reason: 'FORFEIT', winnerId: HOST.userId }),
-      );
-    });
-
-    it('tracks two simultaneous disconnects independently — reconnecting one does not cancel the other (#157)', async () => {
-      await startParticipants(fourPlayers);
-
-      service.handleDisconnect(ROOM_ID, 'player-3', server);
-      await jest.advanceTimersByTimeAsync(5000);
-      service.handleDisconnect(ROOM_ID, 'player-4', server);
-      await jest.advanceTimersByTimeAsync(5000);
-
-      const clientEmit = jest.fn<void, [string, unknown]>();
-      const clientSocket = { emit: clientEmit } as unknown as Socket;
-      service.handleReconnect(ROOM_ID, 'player-3', server, clientSocket);
-
-      // player-3의 재접속이 player-4의 유예 타이머까지 취소시키면 안 된다.
-      await jest.advanceTimersByTimeAsync(25_000);
-
-      const session = service.getSession(ROOM_ID)!;
-      const three = session.participants.find(
-        (participant) => participant.participantId === 'player-3',
-      )!;
-      const four = session.participants.find(
-        (participant) => participant.participantId === 'player-4',
-      )!;
-      expect(three.status).toBe('ACTIVE');
-      expect(four.status).toBe('ELIMINATED');
     });
   });
 

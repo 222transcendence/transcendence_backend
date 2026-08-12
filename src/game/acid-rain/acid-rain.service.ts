@@ -48,7 +48,6 @@ import { WordDictionaryService } from '../../word-dictionary/word-dictionary.ser
 
 const INITIAL_HP = 100;
 const MATCH_DURATION_MS = 180_000;
-const GRACE_PERIOD_MS = 30_000;
 const LANE_COUNT = 5;
 const REDIS_TTL = 1800; // seconds
 const ATTEMPT_RESULT_TTL_MS = 5 * 60 * 1000;
@@ -103,13 +102,6 @@ export class AcidRainService implements OnModuleInit {
   private readonly logger = new Logger(AcidRainService.name);
   // roomId → in-memory session (단일 인스턴스 기준)
   private readonly sessions = new Map<string, AcidRainSession>();
-  // `${roomId}:${userId}` → grace timer. userId까지 키에 포함하는 이유는 3~4인 매치에서
-  // 서로 다른 두 참가자가 동시에 끊기면 roomId만으로는 타이머가 서로 덮어써서 재접속
-  // 취소 로직이 꼬이기 때문(#157).
-  private readonly graceTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
   private readonly processedAttempts = new Map<
     string,
     ProcessedAttemptRecord
@@ -579,24 +571,19 @@ export class AcidRainService implements OnModuleInit {
 
   // ─── 재접속 처리 ──────────────────────────────────────────────────────────
 
+  // 연결이 끊긴 참가자는 소켓이 없으니 애초에 단어를 제출(공격)할 수 없고, 반대로 다른
+  // 생존자들의 타겟 선택/스플래시 데미지는 연결 여부와 무관하게 살아있는 참가자 전원을
+  // 대상으로 하므로 계속 맞을 수는 있다 — 이미 자연스러운 페널티가 있다. 언제든 다시
+  // join_room으로 재접속할 수 있고, 매치 자체도 MATCH_DURATION_MS(180초) 하드 타임아웃이
+  // 있어 무한정 멈춰있을 수 없다. 그래서 강제 탈락/그레이스 타이머는 두지 않는다(#161) —
+  // 화장실을 다녀오거나 새로고침이 잠깐 오래 걸리는 정상적인 경우까지 게임에서 쫓아내는
+  // 부작용만 있었다. (명시적 "나가기"는 다르다 — AcidRainGateway.handleLeaveRoom은 계속
+  // eliminateParticipant로 즉시 탈락 처리한다.)
   handleDisconnect(roomId: string, userId: string, server: Server): void {
     const session = this.sessions.get(roomId);
     if (!session || session.status === 'FINISHED') return;
 
-    server.to(`game:${roomId}`).emit('opponent_disconnected', {
-      userId,
-      graceMs: GRACE_PERIOD_MS,
-    });
-
-    const graceKey = `${roomId}:${userId}`;
-    const timer = setTimeout(() => {
-      this.graceTimers.delete(graceKey);
-      // 그 한 명만 탈락 처리 — 3~4인 매치에서는 나머지가 계속 진행되고, 2인 매치에서는
-      // 결과적으로 남은 한 명이 즉시 승자가 되어 지금까지와 동일하게 동작한다(#157).
-      this.eliminateParticipant(roomId, userId, server, 'FORFEIT');
-    }, GRACE_PERIOD_MS);
-
-    this.graceTimers.set(graceKey, timer);
+    server.to(`game:${roomId}`).emit('opponent_disconnected', { userId });
   }
 
   handleReconnect(
@@ -608,15 +595,6 @@ export class AcidRainService implements OnModuleInit {
     const session = this.sessions.get(roomId);
     if (!session) return;
     this.syncCanonicalFromCompatibility(session);
-
-    // 본인 유예 타이머만 취소 — 같은 방에서 다른 참가자가 별도로 끊긴 상태라면 그
-    // 타이머는 건드리지 않는다(#157).
-    const graceKey = `${roomId}:${userId}`;
-    const timer = this.graceTimers.get(graceKey);
-    if (timer) {
-      clearTimeout(timer);
-      this.graceTimers.delete(graceKey);
-    }
 
     server.to(`game:${roomId}`).emit('opponent_reconnected', { userId });
 
