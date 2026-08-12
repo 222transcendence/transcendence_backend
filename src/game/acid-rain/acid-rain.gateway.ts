@@ -54,6 +54,28 @@ export class AcidRainGateway
 
   private readonly logger = new Logger(AcidRainGateway.name);
 
+  // roomId → 현재 진행 중인 join 임계구역의 Promise. join_room이 room당 한 번에
+  // 하나씩만 "join 소켓 + 인원수 체크 + match_ready 판단"을 수행하도록 직렬화한다
+  // (양쪽이 거의 동시에 join_room을 보내면 서로의 client.join()이 아직 반영되기
+  // 전에 fetchSockets()를 체크해 둘 다 "상대 대기"로 빠지는 레이스를 방지 — #144).
+  private readonly roomJoinQueues = new Map<string, Promise<unknown>>();
+
+  private runExclusive<T>(roomId: string, fn: () => Promise<T>): Promise<T> {
+    const prior = this.roomJoinQueues.get(roomId) ?? Promise.resolve();
+    const run = prior.then(fn, fn);
+    const settled = run.then(
+      () => undefined,
+      () => undefined,
+    );
+    this.roomJoinQueues.set(roomId, settled);
+    void settled.finally(() => {
+      if (this.roomJoinQueues.get(roomId) === settled) {
+        this.roomJoinQueues.delete(roomId);
+      }
+    });
+    return run;
+  }
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly userService: UserService,
@@ -85,7 +107,9 @@ export class AcidRainGateway
 
   handleDisconnect(client: Socket) {
     const { userId, nickname, roomId } = client.data as GameSocketData;
-    this.logger.log(`Disconnected: ${client.id} (${nickname ?? 'unknown'})`);
+    this.logger.log(
+      `Disconnected: ${client.id} (${nickname ?? 'unknown'}) room=${roomId ?? 'none'}`,
+    );
 
     if (userId) websocketConnections.dec({ namespace: 'game' });
 
@@ -105,6 +129,9 @@ export class AcidRainGateway
     if (!userId || !nickname) throw new WsException('Unauthorized');
 
     const { roomId } = this.parseJoinRoomPayload(payload);
+    this.logger.log(
+      `join_room received: room=${roomId} user=${userId} socket=${client.id}`,
+    );
 
     // 로비 Redis에서 방 정보 조회 (lobby.service가 저장하는 키 형식 사용)
     const rawRoom = await this.redisService.get(`game:room:${roomId}`);
@@ -134,61 +161,94 @@ export class AcidRainGateway
     );
     if (!isParticipant) throw new WsException('Not a participant of this room');
 
-    await client.join(`game:${roomId}`);
-    (client.data as GameSocketData).roomId = roomId;
-
-    const existingSession = this.acidRainService.getSession(roomId);
-
-    if (existingSession && existingSession.status !== 'FINISHED') {
-      // 재접속 — state_sync 전송
-      this.acidRainService.handleReconnect(roomId, userId, this.server, client);
-      return;
-    }
-
-    if (room.status !== RoomStatus.WAITING) {
-      throw new WsException('Room is not waiting');
-    }
-
-    if (room.players.length !== 2) {
-      throw new WsException(
-        'Current Acid Rain engine supports exactly 2 participants until #136',
+    // join(소켓 입장) + 인원수 체크 + match_ready 판단을 방별로 직렬화한다 — 두
+    // 플레이어가 거의 동시에 join_room을 보내도 서로의 join()이 반영되기 전에
+    // fetchSockets()를 체크해 둘 다 "상대 대기"로 빠지는 레이스를 방지한다(#144).
+    await this.runExclusive(roomId, async () => {
+      await client.join(`game:${roomId}`);
+      (client.data as GameSocketData).roomId = roomId;
+      this.logger.log(
+        `join_room joined socket room: room=${roomId} user=${userId} socket=${client.id}`,
       );
-    }
 
-    // 양쪽 소켓이 모두 룸에 입장했는지 확인
-    const socketsInRoom = await this.server.in(`game:${roomId}`).fetchSockets();
-    if (socketsInRoom.length < 2) {
-      // 첫 번째 플레이어 — 상대방 대기
-      return;
-    }
+      const existingSession = this.acidRainService.getSession(roomId);
 
-    const [hostPlayer, guestPlayer] = room.players;
-    const host = {
-      userId: hostPlayer.userId,
-      nickname: hostPlayer.nickname,
-    };
-    const guest = {
-      userId: guestPlayer.userId,
-      nickname: guestPlayer.nickname,
-    };
+      if (existingSession && existingSession.status !== 'FINISHED') {
+        // 재접속 — state_sync 전송
+        this.logger.log(
+          `join_room → reconnect branch: room=${roomId} user=${userId} sessionStatus=${existingSession.status}`,
+        );
+        this.acidRainService.handleReconnect(
+          roomId,
+          userId,
+          this.server,
+          client,
+        );
+        return;
+      }
 
-    // match_ready 브로드캐스트
-    const participants: ParticipantState[] = room.players.map((player) => ({
-      participantId: player.userId,
-      userId: player.userId,
-      nickname: player.nickname,
-      type: 'HUMAN',
-      hp: 100,
-    }));
-    const readyPayload: MatchReadyEventPayload = {
-      roomId,
-      protocolVersion: '1.0',
-      participants,
-    };
-    this.server.to(`game:${roomId}`).emit('match_ready', readyPayload);
+      if (room.status !== RoomStatus.WAITING) {
+        this.logger.warn(
+          `join_room rejected — room not waiting: room=${roomId} status=${room.status}`,
+        );
+        throw new WsException('Room is not waiting');
+      }
 
-    // 매치 시작 (3초 카운트다운 포함)
-    await this.acidRainService.startMatch(roomId, host, guest, this.server);
+      if (room.players.length !== 2) {
+        this.logger.warn(
+          `join_room rejected — unsupported player count: room=${roomId} count=${room.players.length}`,
+        );
+        throw new WsException(
+          'Current Acid Rain engine supports exactly 2 participants until #136',
+        );
+      }
+
+      // 양쪽 소켓이 모두 룸에 입장했는지 확인
+      const socketsInRoom = await this.server
+        .in(`game:${roomId}`)
+        .fetchSockets();
+      this.logger.log(
+        `join_room socket count check: room=${roomId} sockets=${socketsInRoom.length} ids=${socketsInRoom.map((s) => s.id).join(',')}`,
+      );
+      if (socketsInRoom.length < 2) {
+        // 첫 번째 플레이어 — 상대방 대기
+        this.logger.log(
+          `join_room waiting for opponent: room=${roomId} user=${userId}`,
+        );
+        return;
+      }
+
+      const [hostPlayer, guestPlayer] = room.players;
+      const host = {
+        userId: hostPlayer.userId,
+        nickname: hostPlayer.nickname,
+      };
+      const guest = {
+        userId: guestPlayer.userId,
+        nickname: guestPlayer.nickname,
+      };
+
+      // match_ready 브로드캐스트
+      const participants: ParticipantState[] = room.players.map((player) => ({
+        participantId: player.userId,
+        userId: player.userId,
+        nickname: player.nickname,
+        type: 'HUMAN',
+        hp: 100,
+      }));
+      const readyPayload: MatchReadyEventPayload = {
+        roomId,
+        protocolVersion: '1.0',
+        participants,
+      };
+      this.server.to(`game:${roomId}`).emit('match_ready', readyPayload);
+      this.logger.log(
+        `join_room match_ready broadcast: room=${roomId} host=${host.userId} guest=${guest.userId}`,
+      );
+
+      // 매치 시작 (3초 카운트다운 포함)
+      await this.acidRainService.startMatch(roomId, host, guest, this.server);
+    });
   }
 
   // ─── leave_room ───────────────────────────────────────────────────────────
