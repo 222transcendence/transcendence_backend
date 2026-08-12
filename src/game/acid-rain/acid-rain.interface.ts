@@ -5,10 +5,12 @@ export type AiDifficulty = 'BEGINNER' | 'NORMAL' | 'HARD';
 export type SubmitRejectedReason =
   | 'ALREADY_CLEARED'
   | 'NOT_FOUND'
-  | 'WRONG_TEXT';
+  | 'WRONG_TEXT'
+  | 'PLAYER_ELIMINATED';
 export type JudgeRejectionReason =
   | 'ROOM_NOT_FOUND'
   | 'PLAYER_NOT_FOUND'
+  | 'PLAYER_ELIMINATED'
   | 'WORD_NOT_FOUND'
   | 'WORD_ALREADY_RESOLVED'
   | 'DUPLICATE_ATTEMPT'
