@@ -257,10 +257,7 @@ describe('AcidRainGateway join_room (N-player GameRoom shape)', () => {
       client,
     );
     expect(acidRainService.startMatch).not.toHaveBeenCalled();
-    expect(toEmit).not.toHaveBeenCalledWith(
-      'match_ready',
-      expect.anything(),
-    );
+    expect(toEmit).not.toHaveBeenCalledWith('match_ready', expect.anything());
   });
 
   it('waits for the full room.players.length quorum (not a hardcoded 2) before starting the match', async () => {
@@ -270,10 +267,7 @@ describe('AcidRainGateway join_room (N-player GameRoom shape)', () => {
     await gateway.handleJoinRoom(client, { roomId: ROOM_ID });
 
     expect(acidRainService.startMatch).not.toHaveBeenCalled();
-    expect(toEmit).not.toHaveBeenCalledWith(
-      'match_ready',
-      expect.anything(),
-    );
+    expect(toEmit).not.toHaveBeenCalledWith('match_ready', expect.anything());
   });
 
   it('broadcasts match_ready with the full players array and starts the match once all room.players.length sockets have joined', async () => {

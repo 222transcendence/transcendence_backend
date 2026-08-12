@@ -184,10 +184,12 @@ describe('AcidRainService', () => {
     redisStore = {};
     jest.clearAllMocks();
     mockUserRepository.update.mockResolvedValue({ affected: 0 });
-    mockUserRepository.findBy.mockImplementation((criteria: { id: unknown }) => {
-      const ids = extractInIds(criteria.id);
-      return Promise.resolve(ids.map((id) => ({ id, nickname: id })));
-    });
+    mockUserRepository.findBy.mockImplementation(
+      (criteria: { id: unknown }) => {
+        const ids = extractInIds(criteria.id);
+        return Promise.resolve(ids.map((id) => ({ id, nickname: id })));
+      },
+    );
     mockUserRepository.increment.mockResolvedValue({ affected: 1 });
     mockParticipantRepository.create.mockImplementation((dto: unknown) => dto);
     mockMatchHistoryRepository.create.mockImplementation((dto: unknown) => dto);
@@ -1243,16 +1245,13 @@ describe('AcidRainService', () => {
       );
       expect(committedHistories).toHaveLength(1);
       expect(committedHistories[0].matchData.reason).toBe('TIME_LIMIT');
-      expect(committedHistories[0].participants).toEqual(
+      const participantSummaries = committedHistories[0].participants.map(
+        (p) => ({ userId: p.user.id, finalHp: p.finalHp }),
+      );
+      expect(participantSummaries).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({
-            finalHp: 30,
-            user: expect.objectContaining({ id: HOST.userId }),
-          }),
-          expect.objectContaining({
-            finalHp: 70,
-            user: expect.objectContaining({ id: GUEST.userId }),
-          }),
+          { userId: HOST.userId, finalHp: 30 },
+          { userId: GUEST.userId, finalHp: 70 },
         ]),
       );
       expect(committedHistories[0].winner?.id).toBe(GUEST.userId);
@@ -1277,9 +1276,8 @@ describe('AcidRainService', () => {
 
       await jest.advanceTimersByTimeAsync(30_000);
 
-      const eliminated = eventsNamed<PlayerEliminatedPayload>(
-        'player_eliminated',
-      );
+      const eliminated =
+        eventsNamed<PlayerEliminatedPayload>('player_eliminated');
       expect(eliminated).toContainEqual({
         userId: HOST.userId,
         rank: 2,
@@ -1365,16 +1363,15 @@ describe('AcidRainService', () => {
       expect(mockMatchHistoryRepository.save).toHaveBeenCalled();
       const saved = mockMatchHistoryRepository.save.mock
         .calls[0][0] as SavedMatchHistory;
-      expect(saved.participants).toEqual(
+      expect(
+        saved.participants.map((p) => ({
+          userId: p.user.id,
+          finalHp: p.finalHp,
+        })),
+      ).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({
-            finalHp: 100,
-            user: expect.objectContaining({ id: HOST.userId }),
-          }),
-          expect.objectContaining({
-            finalHp: 100,
-            user: expect.objectContaining({ id: GUEST.userId }),
-          }),
+          { userId: HOST.userId, finalHp: 100 },
+          { userId: GUEST.userId, finalHp: 100 },
         ]),
       );
       expect(saved.matchData.durationSec).toBeGreaterThanOrEqual(0);
@@ -1388,18 +1385,20 @@ describe('AcidRainService', () => {
       await startMatch();
       await jest.advanceTimersByTimeAsync(3000);
       let missingGuestOnce = true;
-      mockUserRepository.findBy.mockImplementation((criteria: { id: unknown }) => {
-        const ids = extractInIds(criteria.id);
-        if (missingGuestOnce) {
-          missingGuestOnce = false;
-          return Promise.resolve(
-            ids
-              .filter((id) => id !== GUEST.userId)
-              .map((id) => ({ id, nickname: id })),
-          );
-        }
-        return Promise.resolve(ids.map((id) => ({ id, nickname: id })));
-      });
+      mockUserRepository.findBy.mockImplementation(
+        (criteria: { id: unknown }) => {
+          const ids = extractInIds(criteria.id);
+          if (missingGuestOnce) {
+            missingGuestOnce = false;
+            return Promise.resolve(
+              ids
+                .filter((id) => id !== GUEST.userId)
+                .map((id) => ({ id, nickname: id })),
+            );
+          }
+          return Promise.resolve(ids.map((id) => ({ id, nickname: id })));
+        },
+      );
 
       await expect(
         service.endMatch(ROOM_ID, 'TIME_LIMIT', server),
@@ -1527,9 +1526,8 @@ describe('AcidRainService', () => {
       expect(result.gameEnded).toBe(false);
       expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
 
-      const eliminated = eventsNamed<PlayerEliminatedPayload>(
-        'player_eliminated',
-      );
+      const eliminated =
+        eventsNamed<PlayerEliminatedPayload>('player_eliminated');
       expect(eliminated).toContainEqual({
         userId: players[1].userId,
         rank: 3,
@@ -1568,9 +1566,8 @@ describe('AcidRainService', () => {
 
       await jest.advanceTimersByTimeAsync(200);
 
-      const eliminated = eventsNamed<PlayerEliminatedPayload>(
-        'player_eliminated',
-      );
+      const eliminated =
+        eventsNamed<PlayerEliminatedPayload>('player_eliminated');
       expect(eliminated).toContainEqual({
         userId: players[0].userId,
         rank: 3,
@@ -1605,9 +1602,8 @@ describe('AcidRainService', () => {
       expect(missed[0].hp[players[1].userId]).toBe(0);
       expect(missed[0].hp[players[2].userId]).toBe(0);
 
-      const eliminated = eventsNamed<PlayerEliminatedPayload>(
-        'player_eliminated',
-      );
+      const eliminated =
+        eventsNamed<PlayerEliminatedPayload>('player_eliminated');
       expect(eliminated).toContainEqual({
         userId: players[1].userId,
         rank: 1,
@@ -1697,9 +1693,8 @@ describe('AcidRainService', () => {
 
       expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
       expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
-      const eliminated = eventsNamed<PlayerEliminatedPayload>(
-        'player_eliminated',
-      );
+      const eliminated =
+        eventsNamed<PlayerEliminatedPayload>('player_eliminated');
       expect(eliminated).toContainEqual({
         userId: players[2].userId,
         rank: 3,
@@ -1737,9 +1732,8 @@ describe('AcidRainService', () => {
       service.handleDisconnect(ROOM_ID, players[1].userId, server);
       await jest.advanceTimersByTimeAsync(30_000);
 
-      const eliminated = eventsNamed<PlayerEliminatedPayload>(
-        'player_eliminated',
-      );
+      const eliminated =
+        eventsNamed<PlayerEliminatedPayload>('player_eliminated');
       expect(eliminated).toContainEqual({
         userId: players[1].userId,
         rank: 2,
@@ -1833,23 +1827,17 @@ describe('AcidRainService', () => {
 
       const saved = mockMatchHistoryRepository.save.mock
         .calls[0][0] as SavedMatchHistory;
-      expect(saved.participants).toEqual(
+      expect(
+        saved.participants.map((p) => ({
+          userId: p.user.id,
+          finalHp: p.finalHp,
+          rank: p.rank,
+        })),
+      ).toEqual(
         expect.arrayContaining([
-          expect.objectContaining({
-            finalHp: 70,
-            rank: 1,
-            user: expect.objectContaining({ id: players[0].userId }),
-          }),
-          expect.objectContaining({
-            finalHp: 40,
-            rank: 2,
-            user: expect.objectContaining({ id: players[1].userId }),
-          }),
-          expect.objectContaining({
-            finalHp: 10,
-            rank: 3,
-            user: expect.objectContaining({ id: players[2].userId }),
-          }),
+          { userId: players[0].userId, finalHp: 70, rank: 1 },
+          { userId: players[1].userId, finalHp: 40, rank: 2 },
+          { userId: players[2].userId, finalHp: 10, rank: 3 },
         ]),
       );
     });
