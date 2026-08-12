@@ -18,6 +18,8 @@ import { websocketConnections } from '../../metrics/metrics.registry';
 import { AcidRainService } from './acid-rain.service';
 import { AiPracticeService } from '../ai-practice.service';
 import { ChatGateway } from '../../chat/chat.gateway';
+import { GameService } from '../game.service';
+import { LobbyService } from '../../lobby/lobby.service';
 import type {
   JoinRoomPayload,
   LeaveRoomPayload,
@@ -90,6 +92,8 @@ export class AcidRainGateway
     private readonly acidRainService: AcidRainService,
     private readonly aiPracticeService: AiPracticeService,
     private readonly chatGateway: ChatGateway,
+    private readonly gameService: GameService,
+    private readonly lobbyService: LobbyService,
   ) {}
 
   // ─── 연결 ─────────────────────────────────────────────────────────────────
@@ -299,6 +303,28 @@ export class AcidRainGateway
       this.logger.log(
         `join_room match_ready broadcast: room=${roomId} host=${host.userId} guest=${guest.userId}`,
       );
+
+      // 방 상태를 IN_GAME으로 전이하고 로비 전체에 알린다 — 매치가 실제로 시작되는
+      // 이 시점에서 해야 한다(#153). SET_READY 시점에 미리 바꾸면 참가자 본인의
+      // join_room이 "Room is not waiting"으로 거부되어 게임이 시작조차 안 되는 회귀가
+      // 생긴다(실제로 재현해서 발견). 이 전이 덕분에 로비의 다른 유저 화면에서 "참가하기"가
+      // "관전하기"로 바뀌고, getSpectatableRooms()도 이 방을 반환하기 시작한다.
+      const startedRoom = await this.gameService.startGame(roomId);
+      this.lobbyService.broadcast('ROOM_UPDATED', {
+        room: {
+          id: startedRoom.id,
+          hostUserId: startedRoom.hostUserId,
+          maxPlayers: startedRoom.maxPlayers,
+          players: startedRoom.players.map((player) => ({
+            userId: player.userId,
+            nickname: player.nickname,
+            avatar: player.avatar,
+            ready: player.ready,
+          })),
+          status: 'IN_GAME' as const,
+          createdAt: startedRoom.createdAt,
+        },
+      });
 
       // 매치 시작 (3초 카운트다운 포함)
       await this.acidRainService.startMatch(

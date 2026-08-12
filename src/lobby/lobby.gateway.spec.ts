@@ -453,34 +453,21 @@ describe('LobbyGateway SET_READY → GAME_START (#153)', () => {
     await callable.handleMessage(client, { type, payload });
   }
 
-  it('starts the game and broadcasts an IN_GAME ROOM_UPDATED when everyone is ready', async () => {
+  it('broadcasts GAME_START when everyone is ready, without touching room status itself (#153)', async () => {
+    // 방 상태를 IN_GAME으로 바꾸는 책임은 AcidRainGateway.handleJoinRoom로 옮겨졌다 —
+    // 여기서 미리 바꾸면 참가자 본인의 join_room이 "Room is not waiting"으로 거부되는
+    // 회귀가 생긴다(#153 수정 중 실제로 재현/발견됨).
     gameService.setReady.mockResolvedValue(readyRoom(true));
-    gameService.startGame.mockResolvedValue({
-      ...readyRoom(true),
-      status: 'IN_GAME',
-    });
 
     await handle('SET_READY', { roomId: 'room-1', ready: true });
 
-    expect(gameService.startGame).toHaveBeenCalledWith('room-1');
-    // 준비 완료 토글 시점에도 ROOM_UPDATED가 한 번 나가므로(기존 동작), IN_GAME으로
-    // 전이된 두 번째 ROOM_UPDATED를 찾는다.
-    const roomUpdatedCalls = lobbyService.broadcast.mock.calls.filter(
-      ([type]) => type === 'ROOM_UPDATED',
-    );
-    const startedRoomUpdate = roomUpdatedCalls.at(-1);
-    expect(startedRoomUpdate?.[1]).toEqual({
-      room: expect.objectContaining({
-        id: 'room-1',
-        status: 'IN_GAME',
-      }) as unknown,
-    });
+    expect(gameService.startGame).not.toHaveBeenCalled();
     expect(lobbyService.broadcast).toHaveBeenCalledWith('GAME_START', {
       roomId: 'room-1',
     });
   });
 
-  it('does not start the game while a player is still not ready', async () => {
+  it('does not broadcast GAME_START while a player is still not ready', async () => {
     gameService.setReady.mockResolvedValue(readyRoom(false));
 
     await handle('SET_READY', { roomId: 'room-1', ready: false });
