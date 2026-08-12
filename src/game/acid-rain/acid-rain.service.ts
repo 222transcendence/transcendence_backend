@@ -449,10 +449,7 @@ export class AcidRainService implements OnModuleInit {
       candidates[Math.floor(Math.random() * candidates.length)];
 
     const damage = 5 + Math.ceil(word.keystrokes / 2);
-    session.hp[targetUserId] = Math.max(
-      0,
-      session.hp[targetUserId] - damage,
-    );
+    session.hp[targetUserId] = Math.max(0, session.hp[targetUserId] - damage);
 
     let eliminatedRank: number | undefined;
     if (session.hp[targetUserId] <= 0) {
@@ -460,8 +457,7 @@ export class AcidRainService implements OnModuleInit {
       eliminatedRank = entry.rank;
     }
 
-    const remainingPlayers =
-      session.players.length - session.eliminated.length;
+    const remainingPlayers = session.players.length - session.eliminated.length;
     const gameEnded = remainingPlayers <= 1;
     const winnerId = gameEnded ? this.findSoleSurvivor(session) : null;
 
@@ -504,9 +500,7 @@ export class AcidRainService implements OnModuleInit {
     session: AcidRainSession,
     userIds: string[],
   ): RankedParticipant[] {
-    const alreadyEliminated = new Set(
-      session.eliminated.map((e) => e.userId),
-    );
+    const alreadyEliminated = new Set(session.eliminated.map((e) => e.userId));
     const freshIds = userIds.filter((id) => !alreadyEliminated.has(id));
     if (freshIds.length === 0) return [];
 
@@ -536,8 +530,7 @@ export class AcidRainService implements OnModuleInit {
     if (entries.length === 0) return;
 
     session.hp[userId] = 0;
-    const remainingPlayers =
-      session.players.length - session.eliminated.length;
+    const remainingPlayers = session.players.length - session.eliminated.length;
     server.to(`game:${session.roomId}`).emit('player_eliminated', {
       userId,
       rank: entries[0].rank,
@@ -801,7 +794,10 @@ export class AcidRainService implements OnModuleInit {
     );
     let rank = 1;
     for (let i = 0; i < sorted.length; i++) {
-      if (i > 0 && session.hp[sorted[i].userId] < session.hp[sorted[i - 1].userId]) {
+      if (
+        i > 0 &&
+        session.hp[sorted[i].userId] < session.hp[sorted[i - 1].userId]
+      ) {
         rank = i + 1;
       }
       ranking.push({ userId: sorted[i].userId, rank });
