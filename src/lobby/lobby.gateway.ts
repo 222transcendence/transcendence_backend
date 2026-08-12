@@ -205,7 +205,15 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'JOIN_ROOM': {
         const { roomId } = payload as { roomId: string };
-        const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname);
+        const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname)
+          .catch((err: Error) => {
+            if (err?.constructor?.name === 'NotFoundException') {
+              this.lobbyService.sendTo(client, 'ROOM_CLOSED', { roomId });
+              return null;
+            }
+            throw err;
+          });
+        if (!room) break;
         client.roomId = room.id;
         this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`);
         await this.broadcastRoomList();
@@ -217,7 +225,8 @@ export class LobbyGateway implements OnModuleInit {
         const { roomId } = payload as { roomId: string };
         const room = await this.gameService.getRoom(roomId);
         if (!room) {
-          this.lobbyService.sendTo(client, 'ACTION_REJECTED', { message: 'Room not found' });
+          // ACTION_REJECTED 대신 ROOM_CLOSED 전송: 프론트엔드가 재연결 루프 없이 로비로 이동
+          this.lobbyService.sendTo(client, 'ROOM_CLOSED', { roomId });
         } else {
           client.roomId = room.id;
           this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: toLobbyRoom(room) });
