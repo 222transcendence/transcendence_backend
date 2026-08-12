@@ -956,15 +956,30 @@ export class AcidRainService implements OnModuleInit {
             }),
           );
         } else {
-          // 무승부(동시 전멸 포함 공동 1위) — 승패 대신 draws 증가
+          // 무승부(동시 전멸 포함 공동 1위) — 공동 1위만 draws, 나머지는 명백한 패배이므로 losses
+          const topRankIds = new Set(
+            snapshot.ranking.filter((r) => r.rank === 1).map((r) => r.userId),
+          );
           await Promise.all(
             playerIds.map(async (userId) => {
-              const drawUpdate = await userRepo.increment(
-                { id: userId },
-                'draws',
-                1,
-              );
-              this.assertStatsUpdated(drawUpdate, `draw (${userId})`);
+              if (topRankIds.has(userId)) {
+                const drawUpdate = await userRepo.increment(
+                  { id: userId },
+                  'draws',
+                  1,
+                );
+                this.assertStatsUpdated(drawUpdate, `draw (${userId})`);
+              } else {
+                const loserUpdate = await userRepo.increment(
+                  { id: userId },
+                  'losses',
+                  1,
+                );
+                this.assertStatsUpdated(
+                  loserUpdate,
+                  `loser losses (${userId})`,
+                );
+              }
             }),
           );
         }
