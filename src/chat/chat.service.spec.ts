@@ -115,7 +115,7 @@ describe('ChatService', () => {
 
       const result = await service.getHistory();
       expect(repo.find).toHaveBeenCalledWith({
-        where: { type: MessageType.NORMAL },
+        where: [{ type: MessageType.NORMAL }, { type: MessageType.SYSTEM }],
         order: { createdAt: 'DESC' },
         take: 50,
       });
@@ -126,6 +126,23 @@ describe('ChatService', () => {
       });
       expect((result[0].sender as any).password).toBeUndefined();
       expect((result[0].sender as any).email).toBeUndefined();
+    });
+
+    it('should represent SYSTEM messages with a placeholder sender (no real User row)', async () => {
+      const msgs = [
+        {
+          id: 'uuid-2',
+          content: '테스트 님이 입장하셨습니다.',
+          roomId: 'room-1',
+          type: MessageType.SYSTEM,
+          createdAt: new Date(),
+          sender: null,
+        },
+      ] as unknown as ChatMessage[];
+      repo.find.mockResolvedValue(msgs);
+
+      const result = await service.getHistory();
+      expect(result[0].sender).toEqual({ id: 'system', nickname: 'SYSTEM', avatar: null });
     });
   });
 });

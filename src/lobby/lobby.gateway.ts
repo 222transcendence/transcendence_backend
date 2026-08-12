@@ -155,7 +155,7 @@ export class LobbyGateway implements OnModuleInit {
         }
         const timer = setTimeout(() => {
           this.roomLeaveTimers.delete(userId);
-          this.chatGateway.sendSystemMessage(roomId, `${nickname} 님이 방을 나갔습니다.`);
+          this.chatGateway.sendSystemMessage(roomId, `${nickname} 님이 방을 나갔습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
           this.gameService.leaveRoom(roomId, userId)
             .then((updatedRoom) => {
               if (updatedRoom) {
@@ -197,7 +197,7 @@ export class LobbyGateway implements OnModuleInit {
           maxPlayers,
         );
         client.roomId = room.id;
-        this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`);
+        this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
         await this.broadcastRoomList();
         this.lobbyService.sendTo(client, 'ROOM_UPDATED', { room: toLobbyRoom(room) });
         break;
@@ -205,6 +205,13 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'JOIN_ROOM': {
         const { roomId } = payload as { roomId: string };
+        // joinRoom()은 이미 참가한 유저를 idempotent하게 처리(재입장 시도를 성공으로
+        // 취급)하므로, 새로 합류한 게 맞는지는 호출 전 스냅샷으로 미리 판단해야 한다 —
+        // 그렇지 않으면 CREATE_ROOM 직후 프론트가 자동으로 보내는 JOIN_ROOM(호스트
+        // 본인 재확인용)에도 "입장했습니다" 메시지가 중복으로 발송된다.
+        const beforeRoom = await this.gameService.getRoom(roomId);
+        const alreadyMember = !!beforeRoom?.players.some((p) => p.userId === client.userId);
+
         const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname)
           .catch((err: Error) => {
             if (err?.constructor?.name === 'NotFoundException') {
@@ -215,7 +222,9 @@ export class LobbyGateway implements OnModuleInit {
           });
         if (!room) break;
         client.roomId = room.id;
-        this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`);
+        if (!alreadyMember) {
+          this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
+        }
         await this.broadcastRoomList();
         this.lobbyService.broadcast('ROOM_UPDATED', { room: toLobbyRoom(room) });
         break;
@@ -236,7 +245,7 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'LEAVE_ROOM': {
         const { roomId } = payload as { roomId: string };
-        this.chatGateway.sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`);
+        this.chatGateway.sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
         const updatedRoom = await this.gameService.leaveRoom(roomId, client.userId);
         client.roomId = undefined;
         if (updatedRoom) {
