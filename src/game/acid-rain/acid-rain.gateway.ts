@@ -185,15 +185,16 @@ export class AcidRainGateway
           );
           return;
         }
-        const human = aiPractice.participants.find(
-          (participant) => participant.type === 'HUMAN',
-        );
-        if (!human?.userId)
-          throw new WsException('AI practice human participant missing');
-        const ai = aiPractice.participants.find(
-          (participant) => participant.type === 'AI',
-        );
-        if (!ai) throw new WsException('AI practice AI participant missing');
+        if (
+          !aiPractice.participants.some(
+            (participant) => participant.type === 'HUMAN' && participant.userId,
+          ) ||
+          !aiPractice.participants.some(
+            (participant) => participant.type === 'AI',
+          )
+        ) {
+          throw new WsException('AI practice session participants missing');
+        }
         this.server.to(`game:${roomId}`).emit('match_ready', {
           roomId,
           protocolVersion: '1.0',
@@ -204,8 +205,6 @@ export class AcidRainGateway
         } satisfies MatchReadyEventPayload);
         await this.acidRainService.startMatch(
           roomId,
-          { userId: human.userId, nickname: human.nickname },
-          { userId: ai.participantId, nickname: ai.nickname },
           this.server,
           aiPractice.participants,
           'AI_PRACTICE',
@@ -277,16 +276,6 @@ export class AcidRainGateway
         return;
       }
 
-      const [hostPlayer, guestPlayer] = room.players;
-      const host = {
-        userId: hostPlayer.userId,
-        nickname: hostPlayer.nickname,
-      };
-      const guest = {
-        userId: guestPlayer.userId,
-        nickname: guestPlayer.nickname,
-      };
-
       // match_ready 브로드캐스트
       const participants: ParticipantState[] = room.players.map((player) => ({
         participantId: player.userId,
@@ -302,7 +291,7 @@ export class AcidRainGateway
       };
       this.server.to(`game:${roomId}`).emit('match_ready', readyPayload);
       this.logger.log(
-        `join_room match_ready broadcast: room=${roomId} host=${host.userId} guest=${guest.userId}`,
+        `join_room match_ready broadcast: room=${roomId} hostUserId=${room.hostUserId} players=${room.players.length}`,
       );
 
       // 방 상태를 IN_GAME으로 전이하고 로비 전체에 알린다 — 매치가 실제로 시작되는
@@ -328,18 +317,7 @@ export class AcidRainGateway
       });
 
       // 매치 시작 (3초 카운트다운 포함)
-      await this.acidRainService.startMatch(
-        roomId,
-        host,
-        guest,
-        this.server,
-        room.players.map((player) => ({
-          participantId: player.userId,
-          userId: player.userId,
-          nickname: player.nickname,
-          type: 'HUMAN' as const,
-        })),
-      );
+      await this.acidRainService.startMatch(roomId, this.server, participants);
     });
   }
 
@@ -354,19 +332,9 @@ export class AcidRainGateway
     if (!userId) throw new WsException('Unauthorized');
 
     const { roomId } = this.parseLeaveRoomPayload(payload);
-    const session = this.acidRainService.getSession(roomId);
-
-    if (session && session.status === 'IN_PROGRESS') {
-      // 진행 중 퇴장 → FORFEIT
-      await this.acidRainService.endMatch(
-        roomId,
-        'FORFEIT',
-        this.server,
-        session.host.userId === userId
-          ? session.guest.userId
-          : session.host.userId,
-      );
-    }
+    // 진행 중 퇴장 → 해당 참가자만 기권 탈락 처리. N인 매치에서는 생존자가 1명
+    // 이하로 남을 때만 매치가 종료된다(leaveMatch 내부에서 판단).
+    await this.acidRainService.leaveMatch(roomId, userId, this.server);
 
     await client.leave(`game:${roomId}`);
     (client.data as GameSocketData).roomId = undefined;
