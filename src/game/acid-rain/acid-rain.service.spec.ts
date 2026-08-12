@@ -8,6 +8,7 @@ import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
 import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
 import { MatchHistory } from '../entities/match-history.entity';
+import { MatchParticipant } from '../entities/match-participant.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   HpPair,
@@ -90,6 +91,11 @@ describe('AcidRainService', () => {
     increment: jest.fn().mockResolvedValue({ affected: 1 }),
   };
 
+  const mockMatchParticipantRepository = {
+    create: jest.fn().mockImplementation((dto: unknown) => dto),
+    save: jest.fn<Promise<unknown>, [unknown]>().mockResolvedValue({}),
+  };
+
   const mockMatchHistoryRepository = {
     create: jest.fn().mockImplementation((dto: unknown) => dto),
     save: jest.fn<Promise<unknown>, [unknown]>().mockResolvedValue({}),
@@ -103,10 +109,12 @@ describe('AcidRainService', () => {
             }) => Promise<unknown>,
           ) =>
             work({
-              getRepository: (target: unknown) =>
-                target === User
-                  ? mockUserRepository
-                  : mockMatchHistoryRepository,
+              getRepository: (target: unknown) => {
+                if (target === User) return mockUserRepository;
+                if (target === MatchParticipant)
+                  return mockMatchParticipantRepository;
+                return mockMatchHistoryRepository;
+              },
             }),
         ),
     },
@@ -160,6 +168,10 @@ describe('AcidRainService', () => {
     mockUserRepository.increment.mockResolvedValue({ affected: 1 });
     mockMatchHistoryRepository.create.mockImplementation((dto: unknown) => dto);
     mockMatchHistoryRepository.save.mockResolvedValue({});
+    mockMatchParticipantRepository.create.mockImplementation(
+      (dto: unknown) => dto,
+    );
+    mockMatchParticipantRepository.save.mockResolvedValue({});
     mockMatchHistoryRepository.manager.transaction.mockImplementation(
       async (
         work: (manager: {
@@ -167,8 +179,12 @@ describe('AcidRainService', () => {
         }) => Promise<unknown>,
       ) =>
         work({
-          getRepository: (target: unknown) =>
-            target === User ? mockUserRepository : mockMatchHistoryRepository,
+          getRepository: (target: unknown) => {
+            if (target === User) return mockUserRepository;
+            if (target === MatchParticipant)
+              return mockMatchParticipantRepository;
+            return mockMatchHistoryRepository;
+          },
         }),
     );
     mockRedisService.set.mockImplementation((key: string, value: string) => {
@@ -508,6 +524,32 @@ describe('AcidRainService', () => {
       expect(result.accepted && result.wordCleared.targetParticipantId).toBe(
         GUEST.userId,
       );
+    });
+
+    it('rejects a word_submit from an eliminated participant and leaves everyone else untouched (#157)', async () => {
+      await startParticipants(threePlayers);
+      const session = service.getSession(ROOM_ID)!;
+      const eliminated = session.participants[2];
+      eliminated.hp = 0;
+      eliminated.status = 'ELIMINATED';
+      const hostHpBefore = session.participants[0].hp;
+      const guestHpBefore = session.participants[1].hp;
+      addActiveWord(ROOM_ID, 'w-elim', '공격');
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: 'player-3',
+        wordId: 'w-elim',
+        text: '공격',
+      });
+
+      assertRejected(result);
+      expect(result.reason).toBe('PLAYER_ELIMINATED');
+      expect(session.participants[0].hp).toBe(hostHpBefore);
+      expect(session.participants[1].hp).toBe(guestHpBefore);
+      // 탈락자 본인이 지우려던 단어도 여전히 ACTIVE로 남아 있어야 한다(멋대로 지워지지 않음).
+      expect(service.getSession(ROOM_ID)!.activeWords.has('w-elim')).toBe(true);
+      expect(eventsNamed('word_cleared')).toHaveLength(0);
     });
 
     it('clears with zero damage when no living target exists and preserves 1:1 targetHp', async () => {
@@ -1449,10 +1491,26 @@ describe('AcidRainService', () => {
       expect(ended[0]).toEqual(
         expect.objectContaining({ reason: 'TIME_LIMIT', winnerId: null }),
       );
-      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: HOST.userId }, 'draws', 1);
-      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: GUEST.userId }, 'draws', 1);
-      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'wins', 1);
-      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'losses', 1);
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: HOST.userId },
+        'draws',
+        1,
+      );
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: GUEST.userId },
+        'draws',
+        1,
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'wins',
+        1,
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'losses',
+        1,
+      );
     });
 
     it('runs match finalization side effects only once for repeated endMatch calls', async () => {
@@ -1541,6 +1599,10 @@ describe('AcidRainService', () => {
               return Promise.resolve(history);
             }),
           };
+          const txMatchParticipantRepo = {
+            create: mockMatchParticipantRepository.create,
+            save: jest.fn().mockResolvedValue([]),
+          };
           const txUserRepo = {
             findOneBy: mockUserRepository.findOneBy,
             increment: jest.fn(
@@ -1564,8 +1626,11 @@ describe('AcidRainService', () => {
           };
 
           await work({
-            getRepository: (target: unknown) =>
-              target === User ? txUserRepo : txMatchHistoryRepo,
+            getRepository: (target: unknown) => {
+              if (target === User) return txUserRepo;
+              if (target === MatchParticipant) return txMatchParticipantRepo;
+              return txMatchHistoryRepo;
+            },
           });
           committedHistories.push(...pendingHistories);
           committedStats[HOST.userId] = pendingStats[HOST.userId];
@@ -1705,6 +1770,111 @@ describe('AcidRainService', () => {
         ),
       ).toBe(false);
     });
+
+    const fourPlayers: ParticipantPublic[] = [
+      {
+        participantId: HOST.userId,
+        userId: HOST.userId,
+        nickname: HOST.nickname,
+        type: 'HUMAN',
+      },
+      {
+        participantId: GUEST.userId,
+        userId: GUEST.userId,
+        nickname: GUEST.nickname,
+        type: 'HUMAN',
+      },
+      {
+        participantId: 'player-3',
+        userId: 'player-3',
+        nickname: 'three',
+        type: 'HUMAN',
+      },
+      {
+        participantId: 'player-4',
+        userId: 'player-4',
+        nickname: 'four',
+        type: 'HUMAN',
+      },
+    ];
+
+    it('eliminates only the disconnected participant in a 4-player match and lets the rest continue (#157)', async () => {
+      await startParticipants(fourPlayers);
+
+      service.handleDisconnect(ROOM_ID, 'player-3', server);
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      const session = service.getSession(ROOM_ID)!;
+      expect(session.status).not.toBe('FINISHED');
+      const eliminated = session.participants.find(
+        (participant) => participant.participantId === 'player-3',
+      )!;
+      expect(eliminated.status).toBe('ELIMINATED');
+      expect(eliminated.hp).toBe(0);
+      // 나머지 세 명은 여전히 생존 — 매치 전체가 끝나지 않는다.
+      expect(
+        session.participants.filter(
+          (participant) => participant.status === 'ACTIVE',
+        ),
+      ).toHaveLength(3);
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+      // 나머지 참가자들 화면이 즉시 갱신되도록 state_sync가 브로드캐스트된다.
+      const syncs = eventsNamed<StateSyncPayload>('state_sync');
+      expect(syncs.length).toBeGreaterThan(0);
+    });
+
+    it('ends the match with the correct winner once eliminations bring a 4-player match down to one survivor (#157)', async () => {
+      await startParticipants(fourPlayers);
+      const session = service.getSession(ROOM_ID)!;
+      // 스폰/미스 루프를 멈춰서 남은 테스트 시간 동안 자연 발생하는 데미지로 결과가
+      // 흔들리지 않게 한다(다른 disconnect 테스트들과 동일한 패턴).
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+      for (const id of ['player-3', 'player-4']) {
+        const participant = session.participants.find(
+          (candidate) => candidate.participantId === id,
+        )!;
+        participant.hp = 0;
+        participant.status = 'ELIMINATED';
+      }
+      session.participants.find(
+        (candidate) => candidate.participantId === GUEST.userId,
+      )!.hp = 0;
+
+      service.handleDisconnect(ROOM_ID, GUEST.userId, server);
+      await jest.advanceTimersByTimeAsync(30_000);
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended).toContainEqual(
+        expect.objectContaining({ reason: 'FORFEIT', winnerId: HOST.userId }),
+      );
+    });
+
+    it('tracks two simultaneous disconnects independently — reconnecting one does not cancel the other (#157)', async () => {
+      await startParticipants(fourPlayers);
+
+      service.handleDisconnect(ROOM_ID, 'player-3', server);
+      await jest.advanceTimersByTimeAsync(5000);
+      service.handleDisconnect(ROOM_ID, 'player-4', server);
+      await jest.advanceTimersByTimeAsync(5000);
+
+      const clientEmit = jest.fn<void, [string, unknown]>();
+      const clientSocket = { emit: clientEmit } as unknown as Socket;
+      service.handleReconnect(ROOM_ID, 'player-3', server, clientSocket);
+
+      // player-3의 재접속이 player-4의 유예 타이머까지 취소시키면 안 된다.
+      await jest.advanceTimersByTimeAsync(25_000);
+
+      const session = service.getSession(ROOM_ID)!;
+      const three = session.participants.find(
+        (participant) => participant.participantId === 'player-3',
+      )!;
+      const four = session.participants.find(
+        (participant) => participant.participantId === 'player-4',
+      )!;
+      expect(three.status).toBe('ACTIVE');
+      expect(four.status).toBe('ELIMINATED');
+    });
   });
 
   describe('spectator snapshot (#70)', () => {
@@ -1787,6 +1957,126 @@ describe('AcidRainService', () => {
       expect(service.getSession(ROOM_ID)).toBeUndefined();
       expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
       expect(mockMatchHistoryRepository.save).toHaveBeenCalledTimes(1);
+    });
+
+    it('saves one MatchParticipant per human participant and credits only the sole winner (#157)', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server, [
+        {
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          nickname: HOST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          nickname: GUEST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: 'player-3',
+          userId: 'player-3',
+          nickname: 'three',
+          type: 'HUMAN',
+        },
+        {
+          participantId: 'player-4',
+          userId: 'player-4',
+          nickname: 'four',
+          type: 'HUMAN',
+        },
+      ]);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      // host만 생존, 나머지는 탈락 순서대로 eliminationOrder 부여
+      for (const [id, order] of [
+        [GUEST.userId, 1],
+        ['player-3', 2],
+        ['player-4', 3],
+      ] as const) {
+        const participant = session.participants.find(
+          (candidate) => candidate.participantId === id,
+        )!;
+        participant.hp = 0;
+        participant.status = 'ELIMINATED';
+        participant.eliminationOrder = order;
+      }
+
+      await service.endMatch(ROOM_ID, 'KO', server);
+
+      expect(mockMatchParticipantRepository.save).toHaveBeenCalledTimes(1);
+      const savedRows = mockMatchParticipantRepository.save.mock
+        .calls[0][0] as Array<{ user: { id: string }; rank: number }>;
+      expect(savedRows).toHaveLength(4);
+      const rankById = Object.fromEntries(
+        savedRows.map((row) => [row.user.id, row.rank]),
+      );
+      expect(rankById[HOST.userId]).toBe(1);
+      expect(rankById['player-4']).toBe(2);
+      expect(rankById['player-3']).toBe(3);
+      expect(rankById[GUEST.userId]).toBe(4);
+
+      expect(mockUserRepository.increment).toHaveBeenCalledWith(
+        { id: HOST.userId },
+        'wins',
+        1,
+      );
+      for (const id of [GUEST.userId, 'player-3', 'player-4']) {
+        expect(mockUserRepository.increment).toHaveBeenCalledWith(
+          { id },
+          'losses',
+          1,
+        );
+      }
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'draws',
+        1,
+      );
+    });
+
+    it('credits every participant with draws when the ranking has a tied first place (#157)', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server, [
+        {
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          nickname: HOST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          nickname: GUEST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: 'player-3',
+          userId: 'player-3',
+          nickname: 'three',
+          type: 'HUMAN',
+        },
+      ]);
+      await jest.advanceTimersByTimeAsync(3000);
+      // 전원 동일 HP/타이핑 수로 TIME_LIMIT 종료 → 공동 1위(무승부)
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      for (const id of [HOST.userId, GUEST.userId, 'player-3']) {
+        expect(mockUserRepository.increment).toHaveBeenCalledWith(
+          { id },
+          'draws',
+          1,
+        );
+      }
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'wins',
+        1,
+      );
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(
+        expect.anything(),
+        'losses',
+        1,
+      );
     });
   });
 

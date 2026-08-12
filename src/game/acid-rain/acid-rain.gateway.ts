@@ -357,14 +357,13 @@ export class AcidRainGateway
     const session = this.acidRainService.getSession(roomId);
 
     if (session && session.status === 'IN_PROGRESS') {
-      // 진행 중 퇴장 → FORFEIT
-      await this.acidRainService.endMatch(
+      // 진행 중 퇴장 — 그 한 명만 탈락 처리한다(#157). 3~4인 매치에서는 나머지가 계속
+      // 진행되고, 2인 매치에서는 남은 한 명이 즉시 승자가 되어 지금까지와 동일하게 동작한다.
+      this.acidRainService.eliminateParticipant(
         roomId,
-        'FORFEIT',
+        userId,
         this.server,
-        session.host.userId === userId
-          ? session.guest.userId
-          : session.host.userId,
+        'FORFEIT',
       );
     }
 
@@ -405,7 +404,10 @@ export class AcidRainGateway
     );
     client.emit('state_sync', snapshot);
     this.chatGateway
-      .sendSystemMessage(roomId, `${nickname ?? '관전자'} 님이 관전을 시작했습니다.`)
+      .sendSystemMessage(
+        roomId,
+        `${nickname ?? '관전자'} 님이 관전을 시작했습니다.`,
+      )
       .catch((err) =>
         this.logger.error(
           `Failed to send spectator-join system message: ${String(err)}`,
@@ -453,13 +455,16 @@ export class AcidRainGateway
       !isRecord(payload) ||
       !isNonEmptyString(payload.roomId) ||
       typeof payload.partialText !== 'string'
-    ) return;
+    )
+      return;
 
     const { roomId, partialText } = payload;
     const session = this.acidRainService.getSession(roomId);
     if (!session || session.status !== 'IN_PROGRESS') return;
 
-    client.to(`game:${roomId}`).emit('opponent_typing', { participantId: userId, partialText });
+    client
+      .to(`game:${roomId}`)
+      .emit('opponent_typing', { participantId: userId, partialText });
   }
 
   // ─── word_submit ──────────────────────────────────────────────────────────

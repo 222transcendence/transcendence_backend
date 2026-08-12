@@ -20,6 +20,7 @@ import {
   matchEndedTotal,
 } from '../../metrics/metrics.registry';
 import { MatchHistory, MatchMode } from '../entities/match-history.entity';
+import { MatchParticipant } from '../entities/match-participant.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
   AcidRainSession,
@@ -102,7 +103,9 @@ export class AcidRainService implements OnModuleInit {
   private readonly logger = new Logger(AcidRainService.name);
   // roomId → in-memory session (단일 인스턴스 기준)
   private readonly sessions = new Map<string, AcidRainSession>();
-  // roomId → grace timer
+  // `${roomId}:${userId}` → grace timer. userId까지 키에 포함하는 이유는 3~4인 매치에서
+  // 서로 다른 두 참가자가 동시에 끊기면 roomId만으로는 타이머가 서로 덮어써서 재접속
+  // 취소 로직이 꼬이기 때문(#157).
   private readonly graceTimers = new Map<
     string,
     ReturnType<typeof setTimeout>
@@ -473,6 +476,20 @@ export class AcidRainService implements OnModuleInit {
       );
     }
 
+    // 탈락한 참가자는 맞을 수 없을 뿐 아니라(selectAttackTarget이 이미 걸러줌) 본인이
+    // 단어를 지워 다른 생존자를 공격하는 것도 막아야 한다 — 3~4인 매치에서 이 검사가
+    // 없으면 탈락자가 계속 게임에 영향을 줄 수 있었다.
+    const submitter = session.participants.find(
+      (participant) => participant.participantId === playerId,
+    );
+    if (!submitter || submitter.status !== 'ACTIVE' || submitter.hp <= 0) {
+      return this.recordOutcome(
+        attemptKey,
+        input,
+        this.rejected(input, 'PLAYER_ELIMINATED', undefined, session),
+      );
+    }
+
     const resolved = session.resolvedWords.get(wordId);
     if (resolved) {
       return this.recordOutcome(
@@ -512,10 +529,7 @@ export class AcidRainService implements OnModuleInit {
       );
     }
 
-    const actor = session.participants.find(
-      (participant) => participant.participantId === playerId,
-    )!;
-    actor.wordsTyped++;
+    submitter.wordsTyped++;
     this.incrementWordsTypedCompatibility(session, playerId);
 
     const target = this.selectAttackTarget(session, playerId);
@@ -569,23 +583,20 @@ export class AcidRainService implements OnModuleInit {
     const session = this.sessions.get(roomId);
     if (!session || session.status === 'FINISHED') return;
 
-    const opponentId =
-      session.host.userId === userId
-        ? session.guest.userId
-        : session.host.userId;
-
     server.to(`game:${roomId}`).emit('opponent_disconnected', {
       userId,
       graceMs: GRACE_PERIOD_MS,
     });
 
+    const graceKey = `${roomId}:${userId}`;
     const timer = setTimeout(() => {
-      this.graceTimers.delete(roomId);
-      const winnerId = opponentId;
-      this.safeEndMatch(roomId, 'FORFEIT', server, winnerId);
+      this.graceTimers.delete(graceKey);
+      // 그 한 명만 탈락 처리 — 3~4인 매치에서는 나머지가 계속 진행되고, 2인 매치에서는
+      // 결과적으로 남은 한 명이 즉시 승자가 되어 지금까지와 동일하게 동작한다(#157).
+      this.eliminateParticipant(roomId, userId, server, 'FORFEIT');
     }, GRACE_PERIOD_MS);
 
-    this.graceTimers.set(roomId, timer);
+    this.graceTimers.set(graceKey, timer);
   }
 
   handleReconnect(
@@ -598,16 +609,57 @@ export class AcidRainService implements OnModuleInit {
     if (!session) return;
     this.syncCanonicalFromCompatibility(session);
 
-    // 유예 타이머 취소
-    const timer = this.graceTimers.get(roomId);
+    // 본인 유예 타이머만 취소 — 같은 방에서 다른 참가자가 별도로 끊긴 상태라면 그
+    // 타이머는 건드리지 않는다(#157).
+    const graceKey = `${roomId}:${userId}`;
+    const timer = this.graceTimers.get(graceKey);
     if (timer) {
       clearTimeout(timer);
-      this.graceTimers.delete(roomId);
+      this.graceTimers.delete(graceKey);
     }
 
     server.to(`game:${roomId}`).emit('opponent_reconnected', { userId });
 
     clientSocket.emit('state_sync', this.buildStateSyncPayload(session));
+  }
+
+  /**
+   * 특정 참가자 한 명만 탈락 처리한다 — 연결 끊김 유예 만료(handleDisconnect)와 명시적
+   * 퇴장(AcidRainGateway.handleLeaveRoom) 양쪽에서 재사용한다(#157). 이전에는 두 경로
+   * 모두 "상대"를 session.host/session.guest 2슬롯으로 하드코딩해 매치 전체를 끝내버렸다.
+   * 이 한 명을 뺀 나머지가 아직 2명 이상 생존해 있으면 매치는 계속되고, 생존자가 1명
+   * 이하로 줄면 자연스럽게 endMatch로 이어진다. 2인 매치에서는 결과적으로 지금까지와
+   * 동일하게 동작한다(한 명 탈락 → 즉시 남은 한 명이 승자).
+   */
+  eliminateParticipant(
+    roomId: string,
+    participantId: string,
+    server: Server,
+    reason: MatchEndReason,
+  ): void {
+    const session = this.sessions.get(roomId);
+    if (!session || session.status !== 'IN_PROGRESS') return;
+
+    const participant = session.participants.find(
+      (candidate) => candidate.participantId === participantId,
+    );
+    if (!participant || participant.status !== 'ACTIVE') return;
+
+    participant.hp = 0;
+    session.hpByParticipantId[participantId] = 0;
+    this.syncCompatibilityHp(session);
+    this.eliminateBatch(session, [participantId]);
+
+    if (this.aliveParticipants(session).length <= 1) {
+      this.safeEndMatch(roomId, reason, server);
+    } else {
+      // 매치는 계속되지만 나머지 참가자들의 HP 화면을 즉시 갱신해줘야 한다 — 다음
+      // word_cleared/word_missed까지 기다리게 두지 않는다.
+      server
+        .to(`game:${roomId}`)
+        .emit('state_sync', this.buildStateSyncPayload(session));
+      void this.persistSession(session);
+    }
   }
 
   /**
@@ -842,8 +894,12 @@ export class AcidRainService implements OnModuleInit {
   ): MatchFinalizationSnapshot {
     this.syncCanonicalFromCompatibility(session);
     const ranking = this.calculateRanking(session, reason);
+    // FORFEIT도 랭킹에서 승자를 추론해야 한다 — eliminateParticipant(#157)가 탈락 처리
+    // 후 남은 생존자를 승자로 명시하지 않고 endMatch를 호출하기 때문에(3~4인 매치에서는
+    // "상대"가 하나로 정해지지 않으므로 overrideWinnerId를 줄 수 없다), FORFEIT이어도
+    // ranking 기반 추론이 없으면 winnerId가 항상 null이 되어버린다.
     let winnerId: string | null = overrideWinnerId ?? null;
-    if (!winnerId && (reason === 'KO' || reason === 'TIME_LIMIT')) {
+    if (!winnerId) {
       const first = ranking.filter((entry) => entry.rank === 1);
       if (first.length === 1) winnerId = first[0].participantId;
     }
@@ -934,6 +990,7 @@ export class AcidRainService implements OnModuleInit {
       await this.matchHistoryRepo.manager.transaction(async (manager) => {
         const userRepo = manager.getRepository(User);
         const matchHistoryRepo = manager.getRepository(MatchHistory);
+        const matchParticipantRepo = manager.getRepository(MatchParticipant);
         const [hostUser, guestUser] = await Promise.all([
           userRepo.findOneBy({ id: session.host.userId }),
           session.mode === 'AI_PRACTICE'
@@ -976,28 +1033,77 @@ export class AcidRainService implements OnModuleInit {
         });
         await matchHistoryRepo.save(history);
 
-        // PVP만 wins/losses에 반영 — AI 연습은 랭킹에 영향 없음 (#104)
+        // N인 참가자 목록 — 2인 매치도 포함해 항상 채운다(getUserMatches가 이미
+        // participants[]를 조회하도록 구현돼 있음 — #157 이전에는 이 테이블에 PVP 매치가
+        // 한 번도 저장되지 않아 3~4인 매치의 3번째/4번째 참가자가 전적에서 아예 누락됐다).
+        const ranking = this.rankingForParticipants(session, snapshot);
+        const humanParticipants = session.participants.filter(
+          (participant) => participant.type === 'HUMAN' && participant.userId,
+        );
+        const participantUsers = await Promise.all(
+          humanParticipants.map((participant) =>
+            userRepo.findOneBy({ id: participant.userId! }),
+          ),
+        );
+        const participantRows = humanParticipants
+          .map((participant, index) => {
+            const user = participantUsers[index];
+            if (!user) return null;
+            const rank =
+              ranking.find(
+                (entry) => entry.participantId === participant.participantId,
+              )?.rank ?? 0;
+            return matchParticipantRepo.create({
+              match: history,
+              user,
+              finalHp:
+                snapshot.finalHpByParticipantId[participant.participantId] ?? 0,
+              rank,
+            });
+          })
+          .filter((row): row is MatchParticipant => row !== null);
+        if (participantRows.length > 0) {
+          await matchParticipantRepo.save(participantRows);
+        }
+
+        // PVP만 wins/losses/draws에 반영 — AI 연습은 랭킹에 영향 없음 (#104)
         if (mode !== MatchMode.PVP) return;
 
-        if (snapshot.winnerId) {
-          const loserId =
-            snapshot.winnerId === session.host.userId
-              ? session.guest.userId
-              : session.host.userId;
-          const [winnerUpdate, loserUpdate] = await Promise.all([
-            userRepo.increment({ id: snapshot.winnerId }, 'wins', 1),
-            userRepo.increment({ id: loserId }, 'losses', 1),
+        const rank1Ids = ranking
+          .filter((entry) => entry.rank === 1)
+          .map((entry) => entry.participantId);
+        const winnerHumanIds = humanParticipants
+          .filter((participant) => rank1Ids.includes(participant.participantId))
+          .map((participant) => participant.userId!);
+        const loserHumanIds = humanParticipants
+          .filter(
+            (participant) => !rank1Ids.includes(participant.participantId),
+          )
+          .map((participant) => participant.userId!);
+
+        if (winnerHumanIds.length === 1) {
+          // 단독 1위 — 승자는 wins, 나머지 전원은 losses.
+          const [winnerUpdate, ...loserUpdates] = await Promise.all([
+            userRepo.increment({ id: winnerHumanIds[0] }, 'wins', 1),
+            ...loserHumanIds.map((id) =>
+              userRepo.increment({ id }, 'losses', 1),
+            ),
           ]);
           this.assertStatsUpdated(winnerUpdate, 'winner wins');
-          this.assertStatsUpdated(loserUpdate, 'loser losses');
+          loserUpdates.forEach((update) =>
+            this.assertStatsUpdated(update, 'loser losses'),
+          );
         } else {
-          // 무승부: 승패 어느 쪽도 아니지만 게임을 하긴 했으므로 draws로 카운트한다.
-          const [hostUpdate, guestUpdate] = await Promise.all([
-            userRepo.increment({ id: session.host.userId }, 'draws', 1),
-            userRepo.increment({ id: session.guest.userId }, 'draws', 1),
-          ]);
-          this.assertStatsUpdated(hostUpdate, 'host draws');
-          this.assertStatsUpdated(guestUpdate, 'guest draws');
+          // 공동 1위(무승부) — 승패 어느 쪽도 아니지만 게임을 하긴 했으므로 참가자 전원을
+          // draws로 카운트한다.
+          const drawUpdates = await Promise.all(
+            humanParticipants.map((participant) =>
+              userRepo.increment({ id: participant.userId! }, 'draws', 1),
+            ),
+          );
+          drawUpdates.forEach((update) =>
+            this.assertStatsUpdated(update, 'participant draws'),
+          );
         }
       });
     } catch (err) {
@@ -1274,6 +1380,7 @@ export class AcidRainService implements OnModuleInit {
     wordState?: WordResolutionState,
   ): SubmitRejectedReason {
     if (reason === 'INCORRECT_TEXT') return 'WRONG_TEXT';
+    if (reason === 'PLAYER_ELIMINATED') return 'PLAYER_ELIMINATED';
     if (reason === 'WORD_ALREADY_RESOLVED' && wordState === 'CLEARED') {
       return 'ALREADY_CLEARED';
     }
@@ -1281,9 +1388,10 @@ export class AcidRainService implements OnModuleInit {
   }
 
   private determineWinner(session: AcidRainSession): string | null {
-    if (session.hp.host > session.hp.guest) return session.host.userId;
-    if (session.hp.guest > session.hp.host) return session.guest.userId;
-    return null;
+    // aliveParticipants 기준으로 통일한다 — host/guest HP만 비교하면 3~4인 매치에서
+    // 마지막 생존자가 3번째/4번째 참가자일 때 틀린 승자를 반환했다.
+    const alive = this.aliveParticipants(session);
+    return alive.length === 1 ? alive[0].participantId : null;
   }
 
   private damageForKeystrokes(keystrokes: number): number {
