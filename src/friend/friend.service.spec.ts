@@ -26,6 +26,7 @@ describe('FriendService', () => {
     status: UserStatus.ONLINE,
     wins: 0,
     losses: 0,
+    draws: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -38,6 +39,7 @@ describe('FriendService', () => {
     status: UserStatus.OFFLINE,
     wins: 0,
     losses: 0,
+    draws: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
   };

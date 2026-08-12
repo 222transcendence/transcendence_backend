@@ -12,7 +12,13 @@ import { randomUUID } from 'crypto';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
-import { activeGames } from '../../metrics/metrics.registry';
+import {
+  activeGames,
+  wordSpawnedTotal,
+  wordClearedTotal,
+  wordMissedTotal,
+  matchEndedTotal,
+} from '../../metrics/metrics.registry';
 import { MatchHistory, MatchMode } from '../entities/match-history.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
 import {
@@ -318,6 +324,7 @@ export class AcidRainService implements OnModuleInit {
         damage,
       };
       server.to(`game:${session.roomId}`).emit('word_spawn', payload);
+      wordSpawnedTotal.inc();
       void this.persistSession(session);
 
       // 다음 스폰 간격 계산 후 재귀 호출
@@ -375,6 +382,7 @@ export class AcidRainService implements OnModuleInit {
           hp: this.hpByParticipantId(session),
         };
         server.to(`game:${session.roomId}`).emit('word_missed', payload);
+        wordMissedTotal.inc();
       }
 
       if (this.aliveParticipants(session).length <= 1) {
@@ -410,6 +418,7 @@ export class AcidRainService implements OnModuleInit {
       server
         .to(`game:${result.roomId}`)
         .emit('word_cleared', result.wordCleared);
+      wordClearedTotal.inc();
       if (result.gameEnded && outcome.attemptKey) {
         await this.finalizeKoAttempt(outcome.attemptKey, result, server);
       } else if (result.gameEnded) {
@@ -598,14 +607,25 @@ export class AcidRainService implements OnModuleInit {
 
     server.to(`game:${roomId}`).emit('opponent_reconnected', { userId });
 
+    clientSocket.emit('state_sync', this.buildStateSyncPayload(session));
+  }
+
+  /**
+   * 세션 상태를 state_sync 페이로드로 변환하는 순수 함수. 재접속(handleReconnect)과
+   * 관전 입장(getSpectatorSnapshot) 양쪽에서 재사용한다 — session.host/session.guest를
+   * 직접 참조하지 않고 participantStates/hpByParticipantId 변환 헬퍼만 거친다.
+   */
+  private buildStateSyncPayload(
+    session: AcidRainSession,
+  ): StateSyncEventPayload {
     const elapsed = Date.now() - session.startedAt;
     const spawnInterval = Math.max(
       700,
       2000 - 50 * Math.floor(elapsed / 10000),
     );
 
-    const payload: StateSyncEventPayload = {
-      roomId,
+    return {
+      roomId: session.roomId,
       participants: this.participantStates(session),
       hp: this.hpByParticipantId(session),
       activeWords: Array.from(session.activeWords.values()).map(
@@ -634,7 +654,18 @@ export class AcidRainService implements OnModuleInit {
       spawnIntervalMs: spawnInterval,
       now: new Date().toISOString(),
     };
-    clientSocket.emit('state_sync', payload);
+  }
+
+  /**
+   * 관전자 입장 시 보낼 초기 스냅샷. 매치가 진행 중(IN_PROGRESS)일 때만 값을 반환하고,
+   * 세션이 없거나 아직 COUNTDOWN/이미 FINISHED면 null — 게이트웨이가 거부 사유로 사용한다.
+   * 관전자는 room.players/세션 어디에도 등록되지 않으므로 이 메서드는 조회만 하고 아무
+   * 상태도 바꾸지 않는다.
+   */
+  getSpectatorSnapshot(roomId: string): StateSyncEventPayload | null {
+    const session = this.sessions.get(roomId);
+    if (!session || session.status !== 'IN_PROGRESS') return null;
+    return this.buildStateSyncPayload(session);
   }
 
   // ─── 매치 종료 ────────────────────────────────────────────────────────────
@@ -749,6 +780,7 @@ export class AcidRainService implements OnModuleInit {
         durationSec: snapshot.durationSec,
       };
       server.to(`game:${roomId}`).emit('match_end', payload);
+      matchEndedTotal.inc({ reason: snapshot.reason });
       finalization.matchEndEmitted = true;
     }
 
@@ -959,13 +991,13 @@ export class AcidRainService implements OnModuleInit {
           this.assertStatsUpdated(winnerUpdate, 'winner wins');
           this.assertStatsUpdated(loserUpdate, 'loser losses');
         } else {
-          // 무승부: 둘 다 losses 증가
+          // 무승부: 승패 어느 쪽도 아니지만 게임을 하긴 했으므로 draws로 카운트한다.
           const [hostUpdate, guestUpdate] = await Promise.all([
-            userRepo.increment({ id: session.host.userId }, 'losses', 1),
-            userRepo.increment({ id: session.guest.userId }, 'losses', 1),
+            userRepo.increment({ id: session.host.userId }, 'draws', 1),
+            userRepo.increment({ id: session.guest.userId }, 'draws', 1),
           ]);
-          this.assertStatsUpdated(hostUpdate, 'host losses');
-          this.assertStatsUpdated(guestUpdate, 'guest losses');
+          this.assertStatsUpdated(hostUpdate, 'host draws');
+          this.assertStatsUpdated(guestUpdate, 'guest draws');
         }
       });
     } catch (err) {

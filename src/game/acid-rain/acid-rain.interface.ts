@@ -104,6 +104,16 @@ export interface LeaveRoomPayload {
   roomId: string;
 }
 
+/** JoinRoomPayload와 모양은 같지만 의미(관전 입장)를 명확히 구분하기 위한 별도 타입 */
+export interface SpectateRoomPayload {
+  roomId: string;
+}
+
+/** 관전 종료(인앱 이동 등 명시적 종료) — 소켓 disconnect를 기다리지 않고 즉시 정리하기 위함 */
+export interface LeaveSpectatePayload {
+  roomId: string;
+}
+
 export interface WordSubmitPayload {
   roomId: string;
   wordId: string;

@@ -86,14 +86,25 @@ const REQUEST_ID_PATTERN = /^[A-Za-z0-9][A-Za-z0-9_-]{7,127}$/;
 export class LobbyGateway implements OnModuleInit {
   private readonly logger = new Logger(LobbyGateway.name);
   private wss!: WebSocketServer;
-  // userId → 방 이탈 유예 타이머. 로비→대기실 화면 전환처럼 소켓을 새로
-  // 맺는 정상적인 재연결에서 방이 조용히 삭제되는 것을 막기 위함
-  // (WEBSOCKET_PROTOCOL.md §0: 방 소속은 연결 인스턴스가 아니라 인증된
-  // 사용자 기준으로 유지되어야 함).
+  // userId → 방 이탈 유예 타이머(어느 방에 대한 것인지 roomId도 함께 기록).
+  // 로비→대기실 화면 전환처럼 소켓을 새로 맺는 정상적인 재연결에서 방이 조용히
+  // 삭제되는 것을 막기 위함(WEBSOCKET_PROTOCOL.md §0: 방 소속은 연결 인스턴스가
+  // 아니라 인증된 사용자 기준으로 유지되어야 함). roomId를 반드시 함께 확인해야
+  // 하는 이유(#145): 유저가 소켓 재연결 자체는 했지만 실제로는 다른 방으로
+  // 이동한 경우까지 "재접속"으로 오인하면, 이전 방의 유예 타이머가 잘못
+  // 취소되어 그 방의 참가자 항목이 영영 정리되지 않는다.
   private readonly roomLeaveTimers = new Map<
     string,
-    ReturnType<typeof setTimeout>
+    { roomId: string; timer: ReturnType<typeof setTimeout> }
   >();
+
+  private cancelPendingLeave(userId: string, roomId: string): void {
+    const pending = this.roomLeaveTimers.get(userId);
+    if (pending && pending.roomId === roomId) {
+      clearTimeout(pending.timer);
+      this.roomLeaveTimers.delete(userId);
+    }
+  }
 
   constructor(
     private readonly jwtService: JwtService,
@@ -167,12 +178,9 @@ export class LobbyGateway implements OnModuleInit {
     this.lobbyService.addClient(client);
     websocketConnections.inc({ namespace: 'lobby' });
 
-    // 유예 시간 내 재연결 — 예정된 방 이탈 취소 (페이지 전환 등 정상적인 재연결)
-    const pendingLeave = this.roomLeaveTimers.get(userId);
-    if (pendingLeave) {
-      clearTimeout(pendingLeave);
-      this.roomLeaveTimers.delete(userId);
-    }
+    // 이 시점에는 아직 어느 방으로 (재)입장할지 알 수 없으므로 방 이탈 유예
+    // 타이머 취소는 여기서 하지 않는다 — GET_ROOM/JOIN_ROOM 등으로 실제 방에
+    // 합류하는 시점에 cancelPendingLeave()로 처리한다(#145).
 
     ws.on('message', (data) => {
       try {
@@ -200,9 +208,13 @@ export class LobbyGateway implements OnModuleInit {
       if (client.roomId) {
         const roomId = client.roomId;
         const userId = client.userId;
-        // 새 소켓이 이미 연결돼 있으면(페이지 전환 시 새 소켓이 구 소켓보다
-        // 먼저 도착하는 경쟁 조건) 타이머 없이 즉시 종료
-        if (this.lobbyService.findClientByUserId(userId)) {
+        // 같은 방으로 재연결한 경우에만(페이지 전환 시 새 소켓이 구 소켓보다
+        // 먼저 도착하는 경쟁 조건) 정리 타이머를 생략한다. userId만 보고
+        // "어딘가에 연결돼 있으면 재접속"으로 판단하면, 유저가 실제로는 다른
+        // 방으로 이동한 경우까지 재접속으로 오인해 이전 방의 참가자 항목이
+        // 영영 정리되지 않는다(#145).
+        const reconnected = this.lobbyService.findClientByUserId(userId);
+        if (reconnected?.roomId === roomId) {
           return;
         }
         const timer = setTimeout(() => {
@@ -226,7 +238,7 @@ export class LobbyGateway implements OnModuleInit {
               ),
             );
         }, ROOM_LEAVE_GRACE_MS);
-        this.roomLeaveTimers.set(userId, timer);
+        this.roomLeaveTimers.set(userId, { roomId, timer });
       }
     });
 
@@ -245,6 +257,14 @@ export class LobbyGateway implements OnModuleInit {
       case 'LIST_ROOMS': {
         const rooms = await this.gameService.getWaitingRooms();
         this.lobbyService.sendTo(client, 'ROOM_LIST', {
+          rooms: rooms.map(toLobbyRoom),
+        });
+        break;
+      }
+
+      case 'LIST_SPECTATABLE_ROOMS': {
+        const rooms = await this.gameService.getSpectatableRooms();
+        this.lobbyService.sendTo(client, 'SPECTATABLE_ROOM_LIST', {
           rooms: rooms.map(toLobbyRoom),
         });
         break;
@@ -287,6 +307,7 @@ export class LobbyGateway implements OnModuleInit {
           });
         if (!room) break;
         client.roomId = room.id;
+        this.cancelPendingLeave(client.userId, room.id);
         if (!alreadyMember) {
           this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
         }
@@ -305,6 +326,7 @@ export class LobbyGateway implements OnModuleInit {
           this.lobbyService.sendTo(client, 'ROOM_CLOSED', { roomId });
         } else {
           client.roomId = room.id;
+          this.cancelPendingLeave(client.userId, room.id);
           this.lobbyService.sendTo(client, 'ROOM_UPDATED', {
             room: toLobbyRoom(room),
           });

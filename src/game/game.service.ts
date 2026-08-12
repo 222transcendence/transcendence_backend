@@ -58,7 +58,11 @@ export class GameService {
       createdAt: new Date().toISOString(),
     };
 
-    await this.redisService.set(`game:room:${roomId}`, JSON.stringify(room), ROOM_TTL);
+    await this.redisService.set(
+      `game:room:${roomId}`,
+      JSON.stringify(room),
+      ROOM_TTL,
+    );
     return room;
   }
 
@@ -122,7 +126,11 @@ export class GameService {
     return room;
   }
 
-  async setReady(roomId: string, userId: string, ready: boolean): Promise<GameRoom> {
+  async setReady(
+    roomId: string,
+    userId: string,
+    ready: boolean,
+  ): Promise<GameRoom> {
     const roomKey = `game:room:${roomId}`;
     const data = await this.redisService.get(roomKey);
     if (!data) throw new NotFoundException('Game room not found');
@@ -156,13 +164,34 @@ export class GameService {
     return rooms;
   }
 
+  /** 관전 가능한(현재 진행 중인) 방 목록 — deploy#70. getWaitingRooms()와 별도 메서드로
+   *  분리해 기존 대기방 목록의 시맨틱에는 영향을 주지 않는다. */
+  async getSpectatableRooms(): Promise<GameRoom[]> {
+    const client = this.redisService.getClient();
+    const keys = await client.keys('game:room:*');
+    const rooms: GameRoom[] = [];
+
+    for (const key of keys) {
+      const data = await this.redisService.get(key);
+      if (data) {
+        const room = JSON.parse(data) as GameRoom;
+        if (room.status === RoomStatus.IN_GAME) rooms.push(room);
+      }
+    }
+    return rooms;
+  }
+
   async getRoom(roomId: string): Promise<GameRoom | null> {
     const data = await this.redisService.get(`game:room:${roomId}`);
     return data ? (JSON.parse(data) as GameRoom) : null;
   }
 
   async setRoomWithTTL(room: GameRoom): Promise<void> {
-    await this.redisService.set(`game:room:${room.id}`, JSON.stringify(room), ROOM_TTL);
+    await this.redisService.set(
+      `game:room:${room.id}`,
+      JSON.stringify(room),
+      ROOM_TTL,
+    );
   }
 
   // ─── #21 Stats & Leaderboard ────────────────────────────────────────────
@@ -170,12 +199,14 @@ export class GameService {
   async getUserStats(userId: string) {
     const user = await this.userRepository.findOneBy({ id: userId });
     if (!user) throw new NotFoundException('User not found');
-    const totalGames = user.wins + user.losses;
+    const totalGames = user.wins + user.losses + user.draws;
     return {
       wins: user.wins,
       losses: user.losses,
+      draws: user.draws,
       totalGames,
-      winRate: totalGames > 0 ? Math.round((user.wins / totalGames) * 100) / 100 : 0,
+      winRate:
+        totalGames > 0 ? Math.round((user.wins / totalGames) * 100) / 100 : 0,
     };
   }
 
@@ -183,7 +214,12 @@ export class GameService {
    * 유저의 전적 목록. N인 매치(participants 사용)와 기존 2인 매치
    * (hostUser/guestUser 사용) 모두 지원한다.
    */
-  async getUserMatches(userId: string, page: number, limit: number, mode?: MatchMode) {
+  async getUserMatches(
+    userId: string,
+    page: number,
+    limit: number,
+    mode?: MatchMode,
+  ) {
     const participantMatchIds = (
       await this.participantRepository
         .createQueryBuilder('p')
@@ -209,7 +245,9 @@ export class GameService {
         { participantMatchIds, userId },
       );
     } else {
-      qb.where('(m.hostUserId = :userId OR m.guestUserId = :userId)', { userId });
+      qb.where('(m.hostUserId = :userId OR m.guestUserId = :userId)', {
+        userId,
+      });
     }
     if (mode) qb.andWhere('m.mode = :mode', { mode });
 
@@ -222,11 +260,12 @@ export class GameService {
       matches: matches.map((m) => ({
         id: m.id,
         // N인 매치는 participants[], 구형 2인 매치는 hostUser/guestUser(하위호환)
-        participants: m.participants?.map((p) => ({
-          user: safeUser(p.user),
-          finalHp: p.finalHp,
-          rank: p.rank,
-        })) ?? [],
+        participants:
+          m.participants?.map((p) => ({
+            user: safeUser(p.user),
+            finalHp: p.finalHp,
+            rank: p.rank,
+          })) ?? [],
         hostUser: safeUser(m.hostUser),
         guestUser: safeUser(m.guestUser),
         winner: safeUser(m.winner),
@@ -244,17 +283,20 @@ export class GameService {
     const users = await this.userRepository.find({
       order: { wins: 'DESC', losses: 'ASC' },
     });
-    return users.slice(0, 50).map((u) => {
-      const totalGames = u.wins + u.losses;
-      return {
-        id: u.id,
-        nickname: u.nickname,
-        avatar: u.avatar,
-        wins: u.wins,
-        losses: u.losses,
-        totalGames,
-        winRate: totalGames > 0 ? Math.round((u.wins / totalGames) * 100) / 100 : 0,
-      };
-    });
+    return users
+      .slice(0, 50)
+      .map((u) => {
+        const totalGames = u.wins + u.losses + u.draws;
+        return {
+          id: u.id,
+          nickname: u.nickname,
+          avatar: u.avatar,
+          wins: u.wins,
+          losses: u.losses,
+          draws: u.draws,
+          totalGames,
+          winRate: totalGames > 0 ? Math.round((u.wins / totalGames) * 100) / 100 : 0,
+        };
+      });
   }
 }

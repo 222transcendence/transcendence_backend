@@ -1436,6 +1436,25 @@ describe('AcidRainService', () => {
       );
     });
 
+    it('a tied TIME_LIMIT is a draw: winnerId is null and neither wins nor losses change', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.host = 55;
+      session.hp.guest = 55;
+
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended[0]).toEqual(
+        expect.objectContaining({ reason: 'TIME_LIMIT', winnerId: null }),
+      );
+      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: HOST.userId }, 'draws', 1);
+      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: GUEST.userId }, 'draws', 1);
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'wins', 1);
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'losses', 1);
+    });
+
     it('runs match finalization side effects only once for repeated endMatch calls', async () => {
       await service.startMatch(ROOM_ID, HOST, GUEST, server);
       await jest.advanceTimersByTimeAsync(3000);
@@ -1685,6 +1704,40 @@ describe('AcidRainService', () => {
           (e) => e.reason === 'FORFEIT',
         ),
       ).toBe(false);
+    });
+  });
+
+  describe('spectator snapshot (#70)', () => {
+    it('returns a state_sync-shaped snapshot while the match is in progress', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      await jest.advanceTimersByTimeAsync(2000); // one word spawned
+
+      const snapshot = service.getSpectatorSnapshot(ROOM_ID);
+
+      expect(snapshot).not.toBeNull();
+      expect(snapshot?.roomId).toBe(ROOM_ID);
+      expect(snapshot?.hp).toEqual({
+        [HOST.userId]: 100,
+        [GUEST.userId]: 100,
+      });
+      expect(snapshot?.participants).toEqual([
+        expect.objectContaining({ participantId: HOST.userId, type: 'HUMAN' }),
+        expect.objectContaining({ participantId: GUEST.userId, type: 'HUMAN' }),
+      ]);
+      expect(snapshot?.activeWords.length).toBeGreaterThan(0);
+    });
+
+    it('returns null before the match starts (no session yet)', () => {
+      expect(service.getSpectatorSnapshot(ROOM_ID)).toBeNull();
+    });
+
+    it('returns null once the match has ended', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      expect(service.getSpectatorSnapshot(ROOM_ID)).toBeNull();
     });
   });
 
