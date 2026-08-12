@@ -16,9 +16,11 @@ import { RedisService } from '../../redis/redis.service';
 import { extractWsToken } from '../../common/websocket/ws-jwt.util';
 import { websocketConnections } from '../../metrics/metrics.registry';
 import { AcidRainService } from './acid-rain.service';
+import { GameRoom } from '../game.interface';
 import type {
   JoinRoomPayload,
   LeaveRoomPayload,
+  PlayerPublic,
   WordSubmitPayload,
 } from './acid-rain.interface';
 
@@ -93,18 +95,13 @@ export class AcidRainGateway
 
     const { roomId } = payload;
 
-    // 로비 Redis에서 방 정보 조회 (lobby.service가 저장하는 키 형식 사용)
+    // 로비 Redis에서 방 정보 조회 (game.service가 저장하는 GameRoom 형식)
     const rawRoom = await this.redisService.get(`game:room:${roomId}`);
     if (!rawRoom) throw new WsException('Room not found');
 
-    const room = JSON.parse(rawRoom) as {
-      host: { userId: string; nickname: string };
-      guest?: { userId: string; nickname: string } | null;
-      status: string;
-    };
+    const room = JSON.parse(rawRoom) as GameRoom;
 
-    const isParticipant =
-      room.host.userId === userId || room.guest?.userId === userId;
+    const isParticipant = room.players.some((p) => p.userId === userId);
     if (!isParticipant) throw new WsException('Not a participant of this room');
 
     await client.join(`game:${roomId}`);
@@ -118,30 +115,27 @@ export class AcidRainGateway
       return;
     }
 
-    // 양쪽 소켓이 모두 룸에 입장했는지 확인
+    // 로비 룸의 참가자(2~4명) 전원이 /game 소켓에 입장했는지 확인
     const socketsInRoom = await this.server.in(`game:${roomId}`).fetchSockets();
-    if (socketsInRoom.length < 2) {
-      // 첫 번째 플레이어 — 상대방 대기
+    if (socketsInRoom.length < room.players.length) {
+      // 아직 전원이 입장하지 않음 — 나머지 대기
       return;
     }
 
-    // guest 정보 확인
-    if (!room.guest) {
-      throw new WsException('Guest not in room yet');
-    }
-
-    const host = { userId: room.host.userId, nickname: room.host.nickname };
-    const guest = { userId: room.guest.userId, nickname: room.guest.nickname };
+    const players: PlayerPublic[] = room.players.map((p) => ({
+      userId: p.userId,
+      nickname: p.nickname,
+    }));
 
     // match_ready 브로드캐스트
     this.server.to(`game:${roomId}`).emit('match_ready', {
       roomId,
       protocolVersion: '1.0',
-      players: { host, guest },
+      players,
     });
 
     // 매치 시작 (3초 카운트다운 포함)
-    await this.acidRainService.startMatch(roomId, host, guest, this.server);
+    await this.acidRainService.startMatch(roomId, players, this.server);
   }
 
   // ─── leave_room ───────────────────────────────────────────────────────────
@@ -155,19 +149,8 @@ export class AcidRainGateway
     if (!userId) throw new WsException('Unauthorized');
 
     const { roomId } = payload;
-    const session = this.acidRainService.getSession(roomId);
-
-    if (session && session.status === 'IN_PROGRESS') {
-      // 진행 중 퇴장 → FORFEIT
-      await this.acidRainService.endMatch(
-        roomId,
-        'FORFEIT',
-        this.server,
-        session.host.userId === userId
-          ? session.guest.userId
-          : session.host.userId,
-      );
-    }
+    // 명시적 퇴장 → 즉시 탈락 처리 (매치 진행 중이 아니면 내부에서 no-op)
+    await this.acidRainService.eliminateOnLeave(roomId, userId, this.server);
 
     await client.leave(`game:${roomId}`);
     (client.data as GameSocketData).roomId = undefined;
