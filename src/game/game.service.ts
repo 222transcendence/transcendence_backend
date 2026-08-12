@@ -170,10 +170,11 @@ export class GameService {
   async getUserStats(userId: string) {
     const user = await this.userRepository.findOneBy({ id: userId });
     if (!user) throw new NotFoundException('User not found');
-    const totalGames = user.wins + user.losses;
+    const totalGames = user.wins + user.losses + user.draws;
     return {
       wins: user.wins,
       losses: user.losses,
+      draws: user.draws,
       totalGames,
       winRate: totalGames > 0 ? Math.round((user.wins / totalGames) * 100) / 100 : 0,
     };
@@ -245,13 +246,14 @@ export class GameService {
       order: { wins: 'DESC', losses: 'ASC' },
     });
     return users.slice(0, 50).map((u) => {
-      const totalGames = u.wins + u.losses;
+      const totalGames = u.wins + u.losses + u.draws;
       return {
         id: u.id,
         nickname: u.nickname,
         avatar: u.avatar,
         wins: u.wins,
         losses: u.losses,
+        draws: u.draws,
         totalGames,
         winRate: totalGames > 0 ? Math.round((u.wins / totalGames) * 100) / 100 : 0,
       };

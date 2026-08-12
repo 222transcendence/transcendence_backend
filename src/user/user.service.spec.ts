@@ -14,6 +14,7 @@ const mockUser = {
   status: UserStatus.OFFLINE,
   wins: 0,
   losses: 0,
+  draws: 0,
   createdAt: new Date(),
   updatedAt: new Date(),
 };
