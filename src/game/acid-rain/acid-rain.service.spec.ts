@@ -1752,4 +1752,242 @@ describe('AcidRainService', () => {
     });
   });
 
+  describe('#136 state_sync, idempotency, and cleanup', () => {
+    it('restores all active words and participant state for a four-player reconnect', async () => {
+      await startParticipants([
+        {
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          nickname: HOST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          nickname: GUEST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: 'player-3',
+          userId: 'player-3',
+          nickname: 'three',
+          type: 'HUMAN',
+        },
+        {
+          participantId: 'player-4',
+          userId: 'player-4',
+          nickname: 'four',
+          type: 'HUMAN',
+        },
+      ]);
+      for (let i = 0; i < 5; i++)
+        addActiveWord(ROOM_ID, `active-${i}`, `단어-${i}`, 10000 + i);
+      const socketEmit = jest.fn<void, [string, unknown]>();
+      const socket = { emit: socketEmit } as unknown as Socket;
+
+      service.handleReconnect(ROOM_ID, HOST.userId, server, socket);
+
+      const payload = socketEmit.mock.calls[0][1] as StateSyncPayload;
+      expect(payload.activeWords).toHaveLength(5);
+      expect(payload.participants).toHaveLength(4);
+      expect(
+        payload.participants.every((participant) => participant.hp === 100),
+      ).toBe(true);
+    });
+
+    it('serializes an AI participant without a user id in state_sync', async () => {
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:practice',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+      const socketEmit = jest.fn<void, [string, unknown]>();
+      const socket = { emit: socketEmit } as unknown as Socket;
+
+      service.handleReconnect(ROOM_ID, HOST.userId, server, socket);
+
+      const payload = socketEmit.mock.calls[0][1] as StateSyncPayload;
+      expect(payload.participants[1]).toEqual(
+        expect.objectContaining({ participantId: 'ai:practice', type: 'AI' }),
+      );
+      expect(payload.participants[1]).not.toHaveProperty('userId');
+    });
+
+    it('replays the same attempt without applying a second terminal side effect', async () => {
+      await startParticipants([
+        {
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          nickname: HOST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          nickname: GUEST.nickname,
+          type: 'HUMAN',
+        },
+      ]);
+      addActiveWord(ROOM_ID, 'idempotent', '멱등');
+      const input = {
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'idempotent',
+        text: '멱등',
+        attemptId: 'same-attempt',
+      };
+
+      const first = await submitWord(input);
+      const emitsAfterFirst = eventsNamed('word_cleared').length;
+      const second = await submitWord(input);
+
+      expect(second).toEqual(first);
+      expect(eventsNamed('word_cleared')).toHaveLength(emitsAfterFirst);
+      expect(service.getSession(ROOM_ID)!.wordsTyped.host).toBe(1);
+    });
+
+    it('resolves submit and miss event-loop races with one terminal transition', async () => {
+      await startParticipants([
+        {
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          nickname: HOST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          nickname: GUEST.nickname,
+          type: 'HUMAN',
+        },
+      ]);
+      addActiveWord(ROOM_ID, 'race', '경합', 0);
+      const submit = {
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'race',
+        text: '경합',
+        attemptId: 'race-submit',
+      };
+
+      const [submitted] = await Promise.all([
+        Promise.resolve().then(() => submitWord(submit)),
+        Promise.resolve().then(async () => {
+          await jest.advanceTimersByTimeAsync(200);
+        }),
+      ]);
+
+      expect(['CLEARED', 'MISSED']).toContain(
+        service.getSession(ROOM_ID)!.resolvedWords.get('race')?.state,
+      );
+      expect(
+        eventsNamed('word_cleared').length + eventsNamed('word_missed').length,
+      ).toBeLessThanOrEqual(1);
+      expect(
+        submitted.accepted || submitted.reason === 'WORD_ALREADY_RESOLVED',
+      ).toBe(true);
+    });
+
+    it('does not let a stale callback mutate a replacement session with the same room id', async () => {
+      await startParticipants([
+        {
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          nickname: HOST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          nickname: GUEST.nickname,
+          type: 'HUMAN',
+        },
+      ]);
+      const oldSession = service.getSession(ROOM_ID)!;
+      await service.endMatch(ROOM_ID, 'FORFEIT', server, HOST.userId);
+      await startParticipants([
+        {
+          participantId: HOST.userId,
+          userId: HOST.userId,
+          nickname: HOST.nickname,
+          type: 'HUMAN',
+        },
+        {
+          participantId: GUEST.userId,
+          userId: GUEST.userId,
+          nickname: GUEST.nickname,
+          type: 'HUMAN',
+        },
+      ]);
+      const replacement = service.getSession(ROOM_ID)!;
+      if (replacement.spawnLoopTimer) clearTimeout(replacement.spawnLoopTimer);
+      if (replacement.missLoopTimer) clearInterval(replacement.missLoopTimer);
+      const spawnLoop = (
+        service as unknown as {
+          startSpawnLoop: (session: unknown, server: Server) => void;
+        }
+      ).startSpawnLoop;
+      spawnLoop.call(service, oldSession, server);
+      await jest.advanceTimersByTimeAsync(2000);
+
+      expect(replacement.activeWords.size).toBe(0);
+      expect(eventsNamed('word_spawn')).toHaveLength(0);
+    });
+  });
+
+  describe('#136 AI practice history', () => {
+    it('does not look up an AI participant as a User winner and skips PvP statistics', async () => {
+      const aiId = 'ai:practice';
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: aiId,
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+      const session = service.getSession(ROOM_ID)!;
+      session.participants[0].hp = 0;
+      session.participants[0].status = 'ELIMINATED';
+      session.participants[1].hp = 100;
+      session.participants[1].status = 'ACTIVE';
+      session.hp.host = 0;
+      session.hp.guest = 100;
+      session.hpByParticipantId[HOST.userId] = 0;
+      session.hpByParticipantId[aiId] = 100;
+      mockUserRepository.findOneBy.mockImplementation(
+        ({ id }: { id: string }) =>
+          Promise.resolve(id.startsWith('ai:') ? null : { id, nickname: id }),
+      );
+
+      await service.endMatch(ROOM_ID, 'KO', server);
+
+      expect(mockUserRepository.findOneBy).not.toHaveBeenCalledWith({
+        id: aiId,
+      });
+      expect(mockUserRepository.increment).not.toHaveBeenCalled();
+      expect(mockMatchHistoryRepository.save).toHaveBeenCalled();
+    });
+  });
 });
