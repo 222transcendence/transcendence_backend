@@ -193,3 +193,93 @@ describe('AcidRainGateway word_submit', () => {
     expect(acidRainService.startMatch).not.toHaveBeenCalled();
   });
 });
+
+describe('AcidRainGateway join_room concurrency (#144)', () => {
+  let gateway: AcidRainGateway;
+  let acidRainService: {
+    getSession: jest.Mock;
+    startMatch: jest.Mock;
+    handleReconnect: jest.Mock;
+  };
+  let redisService: { get: jest.Mock };
+  let aiPracticeService: { getAiPracticeSession: jest.Mock };
+  let server: Server;
+  let emitMock: jest.Mock;
+  let joinedSockets: Set<string>;
+
+  function makeClient(
+    userId: string,
+    nickname: string,
+    socketId: string,
+  ): Socket {
+    return {
+      id: socketId,
+      data: { userId, nickname },
+      join: jest.fn().mockImplementation(() => {
+        joinedSockets.add(socketId);
+        return Promise.resolve();
+      }),
+    } as unknown as Socket;
+  }
+
+  beforeEach(() => {
+    joinedSockets = new Set();
+    acidRainService = {
+      getSession: jest.fn().mockReturnValue(undefined),
+      startMatch: jest.fn().mockResolvedValue(undefined),
+      handleReconnect: jest.fn(),
+    };
+    redisService = {
+      get: jest.fn().mockResolvedValue(
+        JSON.stringify({
+          id: 'room-1',
+          hostUserId: 'host-id',
+          maxPlayers: 2,
+          status: 'WAITING',
+          players: [
+            { userId: 'host-id', nickname: 'host', ready: true },
+            { userId: 'guest-id', nickname: 'guest', ready: true },
+          ],
+          createdAt: '2026-08-12T00:00:00.000Z',
+        }),
+      ),
+    };
+    aiPracticeService = { getAiPracticeSession: jest.fn() };
+    gateway = new AcidRainGateway(
+      {} as JwtService,
+      {} as UserService,
+      redisService as unknown as RedisService,
+      acidRainService as unknown as AcidRainService,
+      aiPracticeService as unknown as AiPracticeService,
+    );
+
+    emitMock = jest.fn();
+    const toMock = jest.fn().mockReturnValue({ emit: emitMock });
+    const inMock = jest.fn().mockImplementation(() => ({
+      fetchSockets: jest
+        .fn()
+        .mockImplementation(() =>
+          Promise.resolve(Array.from(joinedSockets).map((id) => ({ id }))),
+        ),
+    }));
+    server = { to: toMock, in: inMock } as unknown as Server;
+    gateway.server = server;
+  });
+
+  it('broadcasts match_ready exactly once when both players join concurrently', async () => {
+    const host = makeClient('host-id', 'host', 'socket-host');
+    const guest = makeClient('guest-id', 'guest', 'socket-guest');
+
+    await Promise.all([
+      gateway.handleJoinRoom(host, { roomId: 'room-1' }),
+      gateway.handleJoinRoom(guest, { roomId: 'room-1' }),
+    ]);
+
+    expect(emitMock).toHaveBeenCalledTimes(1);
+    expect(emitMock).toHaveBeenCalledWith(
+      'match_ready',
+      expect.objectContaining({ roomId: 'room-1' }),
+    );
+    expect(acidRainService.startMatch).toHaveBeenCalledTimes(1);
+  });
+});
