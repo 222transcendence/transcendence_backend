@@ -430,7 +430,10 @@ export class AcidRainGateway
     // 메시지 전송을 먼저 완료한 뒤 룸에서 나간다 — 순서를 바꾸면 spectator 소켓이
     // 이미 룸을 떠난 후에 broadcast가 나가 spectator 본인이 퇴장 메시지를 못 받는다.
     await this.chatGateway
-      .sendSystemMessage(roomId, `${nickname ?? '관전자'} 님이 관전을 종료했습니다.`)
+      .sendSystemMessage(
+        roomId,
+        `${nickname ?? '관전자'} 님이 관전을 종료했습니다.`,
+      )
       .catch((err) =>
         this.logger.error(
           `Failed to send spectator-leave system message: ${String(err)}`,
@@ -458,13 +461,81 @@ export class AcidRainGateway
     )
       return;
 
-    const { roomId, partialText } = payload;
+    const { roomId, partialText, wordId, clientTs } = payload;
     const session = this.acidRainService.getSession(roomId);
     if (!session || session.status !== 'IN_PROGRESS') return;
 
     client
       .to(`game:${roomId}`)
       .emit('opponent_typing', { participantId: userId, partialText });
+
+    if (wordId && typeof wordId === 'string' && wordId.length > 0) {
+      this.recordKeystroke(session, userId, wordId, partialText, clientTs);
+    }
+  }
+
+  private recordKeystroke(
+    session: import('./acid-rain.interface').AcidRainSession,
+    participantId: string,
+    wordId: string,
+    partialText: string,
+    clientTs?: number,
+  ): void {
+    if (!session.typingTracker.has(participantId)) {
+      session.typingTracker.set(participantId, new Map());
+    }
+    const participantTracker = session.typingTracker.get(participantId)!;
+
+    if (!participantTracker.has(wordId)) {
+      participantTracker.set(wordId, {
+        sequence: 0,
+        firstTypingAt: null,
+        lastTypingAt: null,
+        prevPartialText: '',
+        typoCount: 0,
+        correctionCount: 0,
+        totalKeystrokes: 0,
+        keystrokeBuffer: [],
+      });
+    }
+    const state = participantTracker.get(wordId)!;
+    const now = new Date();
+
+    if (!state.firstTypingAt && partialText.length > 0) {
+      state.firstTypingAt = now;
+    }
+    if (partialText.length > 0) {
+      state.lastTypingAt = now;
+    }
+
+    const prev = state.prevPartialText;
+    if (partialText.length < prev.length) {
+      state.correctionCount++;
+    } else if (partialText.length > prev.length) {
+      const newChar = partialText[partialText.length - 1];
+      const expectedChar =
+        wordId.length >= partialText.length ? undefined : undefined;
+      void expectedChar; // reserved for future word-aware typo detection
+      state.totalKeystrokes++;
+    }
+
+    const inputType =
+      partialText.length === 0
+        ? 'CLEAR'
+        : partialText.length < prev.length
+          ? 'DELETE'
+          : 'PROGRESS';
+
+    state.keystrokeBuffer.push({
+      wordId,
+      sequence: state.sequence++,
+      partialText,
+      textLength: partialText.length,
+      inputType,
+      clientTs,
+      serverReceivedAt: now,
+    });
+    state.prevPartialText = partialText;
   }
 
   // ─── word_submit ──────────────────────────────────────────────────────────

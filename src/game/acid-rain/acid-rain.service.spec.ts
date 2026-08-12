@@ -8,6 +8,7 @@ import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
 import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
+import { PerformanceService } from './performance.service';
 import { MatchHistory } from '../entities/match-history.entity';
 import { MatchParticipant } from '../entities/match-participant.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
@@ -139,6 +140,11 @@ describe('AcidRainService', () => {
     pickWord: jest.fn().mockReturnValue({ text: '테스트', keystrokes: 6 }),
   };
 
+  const mockPerformanceService = {
+    flushWordAttempt: jest.fn().mockResolvedValue(undefined),
+    saveParticipantPerformances: jest.fn().mockResolvedValue(undefined),
+  };
+
   const mockRedisService = {
     set: jest.fn().mockImplementation((key: string, value: string) => {
       redisStore[key] = value;
@@ -230,6 +236,7 @@ describe('AcidRainService', () => {
         { provide: LobbyService, useValue: mockLobbyService },
         { provide: ChatGateway, useValue: mockChatGateway },
         { provide: WordDictionaryService, useValue: mockWordDictionaryService },
+        { provide: PerformanceService, useValue: mockPerformanceService },
         { provide: ACID_RAIN_RANDOM, useValue: randomMock },
         { provide: AiScheduler, useValue: mockAiScheduler },
       ],
@@ -756,7 +763,7 @@ describe('AcidRainService', () => {
       );
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
-      ).toEqual({
+      ).toMatchObject({
         state: 'CLEARED',
         playerId: HOST.userId,
         attemptId: undefined,
@@ -776,7 +783,7 @@ describe('AcidRainService', () => {
       });
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
-      ).toEqual({
+      ).toMatchObject({
         state: 'MISSED',
       });
     });
@@ -1060,7 +1067,7 @@ describe('AcidRainService', () => {
       expect(guestCorrect.accepted).toBe(true);
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
-      ).toEqual({
+      ).toMatchObject({
         state: 'CLEARED',
         playerId: GUEST.userId,
         attemptId: 'shared-attempt',
