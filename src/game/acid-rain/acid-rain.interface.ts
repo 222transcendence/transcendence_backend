@@ -89,6 +89,8 @@ export interface AcidRainSession {
   nextEliminationOrder: number;
   mode: 'PVP' | 'AI_PRACTICE';
   status: 'COUNTDOWN' | 'IN_PROGRESS' | 'FINISHED';
+  /** participantId → wordId → 타건 추적 상태 (#160) */
+  typingTracker: Map<string, Map<string, WordTypingState>>;
 }
 
 export interface ActiveWord extends Omit<WordSpawnPayload, 'landAt'> {
@@ -100,6 +102,30 @@ export interface TypingProgressPayload {
   roomId: string;
   /** 현재 입력 중인 텍스트 (빈 문자열이면 입력 초기화) */
   partialText: string;
+  /** 현재 목표 단어 ID (#160) */
+  wordId?: string;
+  /** 클라이언트 타임스탬프 — 참고용, 권위 있는 계산에는 사용 안 함 (#160) */
+  clientTs?: number;
+}
+
+/** 단어 하나에 대한 참가자별 인메모리 타건 추적 상태 (#160) */
+export interface WordTypingState {
+  sequence: number;
+  firstTypingAt: Date | null;
+  lastTypingAt: Date | null;
+  prevPartialText: string;
+  typoCount: number;
+  correctionCount: number;
+  totalKeystrokes: number;
+  keystrokeBuffer: Array<{
+    wordId: string;
+    sequence: number;
+    partialText: string;
+    textLength: number;
+    inputType: string;
+    clientTs?: number;
+    serverReceivedAt: Date;
+  }>;
 }
 
 export interface OpponentTypingEventPayload {
