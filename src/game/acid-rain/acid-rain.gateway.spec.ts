@@ -3,7 +3,6 @@ import { Socket, Server } from 'socket.io';
 import { RedisService } from '../../redis/redis.service';
 import { UserService } from '../../user/user.service';
 import { AcidRainGateway } from './acid-rain.gateway';
-import { WsException } from '@nestjs/websockets';
 import { AcidRainService } from './acid-rain.service';
 import { AiPracticeService } from '../ai-practice.service';
 import {
@@ -154,7 +153,7 @@ describe('AcidRainGateway word_submit', () => {
     expect(acidRainService.submitWord).not.toHaveBeenCalled();
   });
 
-  it('recognizes AI practice metadata but does not start a match before #136', async () => {
+  it('starts AI practice through the shared participant-aware match entry point', async () => {
     redisService.get.mockResolvedValue(null);
     aiPracticeService.getAiPracticeSession.mockResolvedValue({
       mode: 'AI_PRACTICE',
@@ -179,17 +178,17 @@ describe('AcidRainGateway word_submit', () => {
       createdAt: '2026-08-12T00:00:00.000Z',
       expiresAt: '2026-08-12T00:10:00.000Z',
     });
-    try {
-      await gateway.handleJoinRoom(client, { roomId: 'practice-room' });
-      throw new Error('Expected join_room to be rejected');
-    } catch (err) {
-      expect(err).toBeInstanceOf(WsException);
-      expect((err as WsException).getError()).toEqual({
-        code: 'AI_PRACTICE_NOT_READY',
-        message: 'AI practice is not available yet',
-      });
-    }
-    expect(clientJoin).not.toHaveBeenCalled();
-    expect(acidRainService.startMatch).not.toHaveBeenCalled();
+    server.to = jest.fn().mockReturnValue({ emit: jest.fn() });
+    clientJoin.mockResolvedValue(undefined);
+    await gateway.handleJoinRoom(client, { roomId: 'practice-room' });
+    expect(clientJoin).toHaveBeenCalledWith('game:practice-room');
+    expect(acidRainService.startMatch).toHaveBeenCalledWith(
+      'practice-room',
+      { userId: 'host-id', nickname: 'host' },
+      { userId: 'ai:practice-room', nickname: 'ACID BOT' },
+      server,
+      expect.any(Array),
+      'AI_PRACTICE',
+    );
   });
 });

@@ -1,4 +1,10 @@
-import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
+import {
+  Inject,
+  Injectable,
+  Logger,
+  OnModuleInit,
+  Optional,
+} from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { Server } from 'socket.io';
@@ -21,6 +27,8 @@ import {
   MatchEndEventPayload,
   MatchEndReason,
   ParticipantState,
+  ParticipantRuntime,
+  ParticipantPublic,
   PlayerPublic,
   RankingEntry,
   StateSyncEventPayload,
@@ -38,6 +46,9 @@ const LANE_COUNT = 5;
 const REDIS_TTL = 1800; // seconds
 const ATTEMPT_RESULT_TTL_MS = 5 * 60 * 1000;
 const MATCH_END_RETRY_DELAY_MS = 1000;
+export const ACID_RAIN_RANDOM = Symbol('ACID_RAIN_RANDOM');
+const MAX_ACTIVE_WORDS = 5;
+const SPLASH_DAMAGE = 3;
 
 type FinalizationStatus = 'PENDING' | 'COMPLETED' | 'FAILED';
 
@@ -75,6 +86,8 @@ interface MatchFinalizationSnapshot {
   winnerId: string | null;
   finalHp: HpPair;
   wordsTyped: { host: number; guest: number };
+  finalHpByParticipantId: HpByParticipantId;
+  wordsTypedByParticipantId: Record<string, number>;
   durationSec: number;
 }
 
@@ -112,6 +125,9 @@ export class AcidRainService implements OnModuleInit {
     private readonly matchHistoryRepo: Repository<MatchHistory>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    @Optional()
+    @Inject(ACID_RAIN_RANDOM)
+    private readonly random: () => number = Math.random,
   ) {}
 
   async onModuleInit() {
@@ -140,14 +156,43 @@ export class AcidRainService implements OnModuleInit {
     host: PlayerPublic,
     guest: PlayerPublic,
     server: Server,
+    participantPublics: ParticipantPublic[] = [
+      {
+        participantId: host.userId,
+        userId: host.userId,
+        nickname: host.nickname,
+        type: 'HUMAN',
+      },
+      {
+        participantId: guest.userId,
+        userId: guest.userId,
+        nickname: guest.nickname,
+        type: 'HUMAN',
+      },
+    ],
+    mode: 'PVP' | 'AI_PRACTICE' = 'PVP',
   ): Promise<void> {
     if (this.sessions.has(roomId)) return; // 이미 진행 중
 
+    const participants = participantPublics.map((participant) => ({
+      ...participant,
+      hp: INITIAL_HP,
+      wordsTyped: 0,
+      status: 'ACTIVE' as const,
+    }));
+    const hpByParticipantId = Object.fromEntries(
+      participants.map((participant) => [
+        participant.participantId,
+        INITIAL_HP,
+      ]),
+    );
     const session: AcidRainSession = {
       roomId,
       host,
       guest,
+      participants,
       hp: { host: INITIAL_HP, guest: INITIAL_HP },
+      hpByParticipantId,
       wordsTyped: { host: 0, guest: 0 },
       activeWords: new Map(),
       startedAt: Date.now(),
@@ -157,6 +202,8 @@ export class AcidRainService implements OnModuleInit {
       matchEndTimer: null,
       occupiedLanes: new Set(),
       resolvedWords: new Map(),
+      nextEliminationOrder: 1,
+      mode,
       status: 'COUNTDOWN',
     };
     this.sessions.set(roomId, session);
@@ -164,17 +211,20 @@ export class AcidRainService implements OnModuleInit {
     await this.persistSession(session);
 
     // 두 플레이어 상태 IN_GAME으로 전환 (DB + Redis + 친구 실시간 알림)
-    await this.userRepo.update([host.userId, guest.userId], {
+    const humanIds = participants
+      .filter(
+        (participant) => participant.type === 'HUMAN' && participant.userId,
+      )
+      .map((participant) => participant.userId!);
+    await this.userRepo.update(humanIds, {
       status: UserStatus.IN_GAME,
     });
-    await Promise.all([
-      this.chatGateway.setUserStatus(host.userId, 'IN_GAME'),
-      this.chatGateway.setUserStatus(guest.userId, 'IN_GAME'),
-    ]);
-    await Promise.all([
-      this.chatGateway.notifyFriends(host.userId, 'IN_GAME'),
-      this.chatGateway.notifyFriends(guest.userId, 'IN_GAME'),
-    ]);
+    await Promise.all(
+      humanIds.map((id) => this.chatGateway.setUserStatus(id, 'IN_GAME')),
+    );
+    await Promise.all(
+      humanIds.map((id) => this.chatGateway.notifyFriends(id, 'IN_GAME')),
+    );
 
     // 3초 카운트다운 후 IN_PROGRESS
     const startAt = new Date(Date.now() + 3000).toISOString();
@@ -202,10 +252,39 @@ export class AcidRainService implements OnModuleInit {
   // ─── 스폰 루프 ────────────────────────────────────────────────────────────
 
   private startSpawnLoop(session: AcidRainSession, server: Server): void {
+    const scheduleNext = (elapsedSec: number) => {
+      const interval = Math.max(700, 2000 - 50 * Math.floor(elapsedSec / 10));
+      session.spawnLoopTimer = setTimeout(tick, interval);
+    };
+
     const tick = () => {
-      if (session.status !== 'IN_PROGRESS') return;
+      if (
+        this.sessions.get(session.roomId) !== session ||
+        session.status !== 'IN_PROGRESS'
+      ) {
+        return;
+      }
       const elapsed = (Date.now() - session.startedAt) / 1000;
-      const word = this.wordDictionaryService.pickWord(elapsed);
+      if (session.activeWords.size >= MAX_ACTIVE_WORDS) {
+        scheduleNext(elapsed);
+        return;
+      }
+
+      let word = this.wordDictionaryService.pickWord(elapsed);
+      const activeTexts = new Set(
+        Array.from(session.activeWords.values()).map((active) => active.text),
+      );
+      for (
+        let attempt = 0;
+        attempt < 10 && activeTexts.has(word.text);
+        attempt++
+      ) {
+        word = this.wordDictionaryService.pickWord(elapsed);
+      }
+      if (activeTexts.has(word.text)) {
+        scheduleNext(elapsed);
+        return;
+      }
       const wordId = `w_${randomUUID().slice(0, 8)}`;
       const lane = this.assignLane(session);
       const fallDurationMs = Math.round(
@@ -242,8 +321,7 @@ export class AcidRainService implements OnModuleInit {
       void this.persistSession(session);
 
       // 다음 스폰 간격 계산 후 재귀 호출
-      const interval = Math.max(700, 2000 - 50 * Math.floor(elapsed / 10));
-      session.spawnLoopTimer = setTimeout(tick, interval);
+      scheduleNext(elapsed);
     };
 
     const initialInterval = 2000;
@@ -261,32 +339,48 @@ export class AcidRainService implements OnModuleInit {
 
   private startMissLoop(session: AcidRainSession, server: Server): void {
     session.missLoopTimer = setInterval(() => {
-      if (session.status !== 'IN_PROGRESS') return;
+      if (
+        this.sessions.get(session.roomId) !== session ||
+        session.status !== 'IN_PROGRESS'
+      ) {
+        return;
+      }
+      this.syncCanonicalFromCompatibility(session);
       const now = Date.now();
+      const missed: string[] = [];
       for (const [wordId, word] of session.activeWords) {
-        if (now >= word.landAt) {
-          session.activeWords.delete(wordId);
-          session.occupiedLanes.delete(word.lane);
-          session.resolvedWords.set(wordId, { state: 'MISSED' });
-
-          const SPLASH = 3;
-          session.hp.host = Math.max(0, session.hp.host - SPLASH);
-          session.hp.guest = Math.max(0, session.hp.guest - SPLASH);
-
-          const payload: WordMissedEventPayload = {
-            wordId,
-            splashDamage: SPLASH,
-            hp: this.hpByParticipantId(session),
-          };
-          server.to(`game:${session.roomId}`).emit('word_missed', payload);
-
-          if (session.hp.host <= 0 || session.hp.guest <= 0) {
-            this.safeEndMatch(session.roomId, 'KO', server);
-            return;
-          }
-
-          void this.persistSession(session);
+        if (
+          now >= word.landAt &&
+          this.transitionWord(session, wordId, 'MISSED')
+        ) {
+          missed.push(wordId);
         }
+      }
+      if (missed.length === 0) return;
+
+      const newlyEliminated = new Set<string>();
+      for (const participant of this.aliveParticipants(session)) {
+        const hp = Math.max(0, participant.hp - SPLASH_DAMAGE);
+        participant.hp = hp;
+        session.hpByParticipantId[participant.participantId] = hp;
+        if (hp === 0) newlyEliminated.add(participant.participantId);
+      }
+      this.syncCompatibilityHp(session);
+      this.eliminateBatch(session, [...newlyEliminated]);
+
+      for (const wordId of missed) {
+        const payload: WordMissedEventPayload = {
+          wordId,
+          splashDamage: SPLASH_DAMAGE,
+          hp: this.hpByParticipantId(session),
+        };
+        server.to(`game:${session.roomId}`).emit('word_missed', payload);
+      }
+
+      if (this.aliveParticipants(session).length <= 1) {
+        this.safeEndMatch(session.roomId, 'KO', server);
+      } else {
+        void this.persistSession(session);
       }
     }, 200);
   }
@@ -352,6 +446,7 @@ export class AcidRainService implements OnModuleInit {
         replayed: false,
       };
     }
+    this.syncCanonicalFromCompatibility(session);
 
     if (session.status !== 'IN_PROGRESS') {
       return this.recordOutcome(
@@ -395,35 +490,46 @@ export class AcidRainService implements OnModuleInit {
       );
     }
 
-    session.activeWords.delete(wordId);
-    session.occupiedLanes.delete(word.lane);
-    session.resolvedWords.set(wordId, {
-      state: 'CLEARED',
-      playerId,
-      attemptId,
-    });
+    if (!this.transitionWord(session, wordId, 'CLEARED', playerId, attemptId)) {
+      return this.recordOutcome(
+        attemptKey,
+        input,
+        this.rejected(
+          input,
+          'WORD_ALREADY_RESOLVED',
+          session.resolvedWords.get(wordId)?.state,
+          session,
+        ),
+      );
+    }
 
-    const isHost = session.host.userId === playerId;
-    if (isHost) session.wordsTyped.host++;
-    else session.wordsTyped.guest++;
+    const actor = session.participants.find(
+      (participant) => participant.participantId === playerId,
+    )!;
+    actor.wordsTyped++;
+    this.incrementWordsTypedCompatibility(session, playerId);
 
-    const damage = this.damageForKeystrokes(word.keystrokes);
-    if (isHost) session.hp.guest = Math.max(0, session.hp.guest - damage);
-    else session.hp.host = Math.max(0, session.hp.host - damage);
+    const target = this.selectAttackTarget(session, playerId);
+    const damage = target ? this.damageForKeystrokes(word.keystrokes) : 0;
+    if (target) this.applyDamage(session, target.participantId, damage);
 
-    const gameEnded = session.hp.host <= 0 || session.hp.guest <= 0;
+    const gameEnded = this.aliveParticipants(session).length <= 1;
     const winnerId = gameEnded ? this.determineWinner(session) : null;
-    const loserId = winnerId
-      ? winnerId === session.host.userId
-        ? session.guest.userId
-        : session.host.userId
-      : null;
+    const loserId =
+      winnerId && session.participants.length === 2
+        ? winnerId === session.host.userId
+          ? session.guest.userId
+          : session.host.userId
+        : null;
     const wordCleared = {
       wordId,
       clearedBy: playerId,
-      targetParticipantId: isHost ? session.guest.userId : session.host.userId,
+      ...(target ? { targetParticipantId: target.participantId } : {}),
       damage,
       hp: this.hpByParticipantId(session),
+      ...(session.participants.length > 2
+        ? { targetHpByParticipantId: this.hpByParticipantId(session) }
+        : {}),
     };
 
     const result: JudgeWordSubmitResult = {
@@ -436,6 +542,9 @@ export class AcidRainService implements OnModuleInit {
       wordStateAfter: 'CLEARED',
       damage,
       targetHp: { ...session.hp },
+      ...(session.participants.length > 2
+        ? { targetHpByParticipantId: this.hpByParticipantId(session) }
+        : {}),
       gameEnded,
       winnerId,
       loserId,
@@ -478,6 +587,7 @@ export class AcidRainService implements OnModuleInit {
   ): void {
     const session = this.sessions.get(roomId);
     if (!session) return;
+    this.syncCanonicalFromCompatibility(session);
 
     // 유예 타이머 취소
     const timer = this.graceTimers.get(roomId);
@@ -633,12 +743,9 @@ export class AcidRainService implements OnModuleInit {
         roomId,
         winnerId: snapshot.winnerId,
         reason: snapshot.reason,
-        finalHp: this.hpPairToParticipantHp(session, snapshot.finalHp),
-        ranking: this.rankingForCurrentOneVsOne(session, snapshot),
-        wordsTyped: this.wordsTypedByParticipantId(
-          session,
-          snapshot.wordsTyped,
-        ),
+        finalHp: snapshot.finalHpByParticipantId,
+        ranking: this.rankingForParticipants(session, snapshot),
+        wordsTyped: snapshot.wordsTypedByParticipantId,
         durationSec: snapshot.durationSec,
       };
       server.to(`game:${roomId}`).emit('match_end', payload);
@@ -661,22 +768,29 @@ export class AcidRainService implements OnModuleInit {
 
     // 두 플레이어 상태 ONLINE으로 복원 (DB + Redis + 친구 실시간 알림)
     if (!finalization.usersOnline) {
-      await this.userRepo.update([session.host.userId, session.guest.userId], {
+      const humanIds = session.participants
+        .filter(
+          (participant) => participant.type === 'HUMAN' && participant.userId,
+        )
+        .map((participant) => participant.userId!);
+      await this.userRepo.update(humanIds, {
         status: UserStatus.ONLINE,
       });
-      await Promise.all([
-        this.chatGateway.setUserStatus(session.host.userId, 'ONLINE'),
-        this.chatGateway.setUserStatus(session.guest.userId, 'ONLINE'),
-      ]);
-      await Promise.all([
-        this.chatGateway.notifyFriends(session.host.userId, 'ONLINE'),
-        this.chatGateway.notifyFriends(session.guest.userId, 'ONLINE'),
-      ]);
+      await Promise.all(
+        humanIds.map((id) => this.chatGateway.setUserStatus(id, 'ONLINE')),
+      );
+      await Promise.all(
+        humanIds.map((id) => this.chatGateway.notifyFriends(id, 'ONLINE')),
+      );
       finalization.usersOnline = true;
     }
 
     if (!finalization.historySaved) {
-      await this.saveMatchHistory(session, snapshot);
+      await this.saveMatchHistory(
+        session,
+        snapshot,
+        session.mode === 'AI_PRACTICE' ? MatchMode.AI_PRACTICE : MatchMode.PVP,
+      );
       finalization.historySaved = true;
     }
 
@@ -694,12 +808,12 @@ export class AcidRainService implements OnModuleInit {
     reason: MatchEndReason,
     overrideWinnerId?: string,
   ): MatchFinalizationSnapshot {
+    this.syncCanonicalFromCompatibility(session);
+    const ranking = this.calculateRanking(session, reason);
     let winnerId: string | null = overrideWinnerId ?? null;
     if (!winnerId && (reason === 'KO' || reason === 'TIME_LIMIT')) {
-      if (session.hp.host > session.hp.guest) winnerId = session.host.userId;
-      else if (session.hp.guest > session.hp.host)
-        winnerId = session.guest.userId;
-      // 동률 무승부 → null
+      const first = ranking.filter((entry) => entry.rank === 1);
+      if (first.length === 1) winnerId = first[0].participantId;
     }
 
     return {
@@ -707,6 +821,8 @@ export class AcidRainService implements OnModuleInit {
       winnerId,
       finalHp: { ...session.hp },
       wordsTyped: { ...session.wordsTyped },
+      finalHpByParticipantId: this.hpByParticipantId(session),
+      wordsTypedByParticipantId: this.allWordsTypedByParticipantId(session),
       durationSec: Math.round((Date.now() - session.startedAt) / 1000),
     };
   }
@@ -714,7 +830,12 @@ export class AcidRainService implements OnModuleInit {
   // ─── Redis 영속화 ─────────────────────────────────────────────────────────
 
   private async persistSession(session: AcidRainSession): Promise<void> {
-    if (session.status === 'FINISHED') return;
+    if (
+      this.sessions.get(session.roomId) !== session ||
+      session.status === 'FINISHED'
+    ) {
+      return;
+    }
 
     const roomId = session.roomId;
     const previous = this.pendingSessionPersists.get(roomId);
@@ -723,12 +844,21 @@ export class AcidRainService implements OnModuleInit {
         this.logger.error('Previous Acid Rain session persist failed', err);
       })
       .then(async () => {
-        if (session.status === 'FINISHED') return;
+        if (
+          this.sessions.get(session.roomId) !== session ||
+          session.status === 'FINISHED'
+        ) {
+          return;
+        }
 
         const serializable = {
           roomId: session.roomId,
           host: session.host,
           guest: session.guest,
+          participants: session.participants,
+          hpByParticipantId: session.hpByParticipantId,
+          mode: session.mode,
+          nextEliminationOrder: session.nextEliminationOrder,
           hp: session.hp,
           wordsTyped: session.wordsTyped,
           startedAt: session.startedAt,
@@ -774,22 +904,34 @@ export class AcidRainService implements OnModuleInit {
         const matchHistoryRepo = manager.getRepository(MatchHistory);
         const [hostUser, guestUser] = await Promise.all([
           userRepo.findOneBy({ id: session.host.userId }),
-          userRepo.findOneBy({ id: session.guest.userId }),
+          session.mode === 'AI_PRACTICE'
+            ? Promise.resolve(null)
+            : userRepo.findOneBy({ id: session.guest.userId }),
         ]);
-        if (!hostUser || !guestUser) {
+        if (!hostUser || (session.mode !== 'AI_PRACTICE' && !guestUser)) {
           throw new Error('Acid Rain match participant not found');
         }
 
-        const winnerUser = snapshot.winnerId
-          ? await userRepo.findOneBy({ id: snapshot.winnerId })
-          : null;
-        if (snapshot.winnerId && !winnerUser) {
+        const winnerParticipant = snapshot.winnerId
+          ? session.participants.find(
+              (participant) => participant.participantId === snapshot.winnerId,
+            )
+          : undefined;
+        const winnerUser =
+          winnerParticipant?.type === 'HUMAN' && winnerParticipant.userId
+            ? await userRepo.findOneBy({ id: winnerParticipant.userId })
+            : null;
+        if (
+          winnerParticipant?.type === 'HUMAN' &&
+          snapshot.winnerId &&
+          !winnerUser
+        ) {
           throw new Error('Acid Rain match winner not found');
         }
 
         const history = matchHistoryRepo.create({
           hostUser,
-          guestUser,
+          ...(guestUser ? { guestUser } : {}),
           winner: winnerUser,
           mode,
           roundsPlayed: 1,
@@ -949,6 +1091,9 @@ export class AcidRainService implements OnModuleInit {
       return {
         ...result,
         targetHp: { ...result.targetHp },
+        targetHpByParticipantId: result.targetHpByParticipantId
+          ? { ...result.targetHpByParticipantId }
+          : undefined,
         wordCleared: {
           ...result.wordCleared,
           hp: { ...result.wordCleared.hp },
@@ -959,14 +1104,127 @@ export class AcidRainService implements OnModuleInit {
     return {
       ...result,
       targetHp: result.targetHp ? { ...result.targetHp } : undefined,
+      targetHpByParticipantId: result.targetHpByParticipantId
+        ? { ...result.targetHpByParticipantId }
+        : undefined,
       submitRejected: { ...result.submitRejected },
     };
   }
 
   private isParticipant(session: AcidRainSession, playerId: string): boolean {
-    return (
-      session.host.userId === playerId || session.guest.userId === playerId
+    return session.participants.some(
+      (participant) => participant.participantId === playerId,
     );
+  }
+
+  private transitionWord(
+    session: AcidRainSession,
+    wordId: string,
+    state: 'CLEARED' | 'MISSED',
+    playerId?: string,
+    attemptId?: string,
+  ): boolean {
+    const word = session.activeWords.get(wordId);
+    if (!word || session.resolvedWords.has(wordId)) return false;
+    session.activeWords.delete(wordId);
+    session.occupiedLanes.delete(word.lane);
+    session.resolvedWords.set(wordId, { state, playerId, attemptId });
+    return true;
+  }
+
+  private aliveParticipants(session: AcidRainSession): ParticipantRuntime[] {
+    return session.participants.filter(
+      (participant) => participant.status === 'ACTIVE' && participant.hp > 0,
+    );
+  }
+
+  private selectAttackTarget(
+    session: AcidRainSession,
+    attackerId: string,
+  ): ParticipantRuntime | undefined {
+    const candidates = this.aliveParticipants(session).filter(
+      (participant) => participant.participantId !== attackerId,
+    );
+    if (candidates.length === 0) return undefined;
+    const index = Math.min(
+      candidates.length - 1,
+      Math.max(0, Math.floor(this.random() * candidates.length)),
+    );
+    return candidates[index];
+  }
+
+  private applyDamage(
+    session: AcidRainSession,
+    participantId: string,
+    damage: number,
+  ): void {
+    const participant = session.participants.find(
+      (candidate) => candidate.participantId === participantId,
+    );
+    if (!participant || participant.status !== 'ACTIVE') return;
+    participant.hp = Math.max(0, participant.hp - damage);
+    session.hpByParticipantId[participantId] = participant.hp;
+    this.syncCompatibilityHp(session);
+    if (participant.hp === 0) this.eliminateBatch(session, [participantId]);
+  }
+
+  private eliminateBatch(
+    session: AcidRainSession,
+    participantIds: string[],
+  ): void {
+    const ids = [...new Set(participantIds)].filter((participantId) => {
+      const participant = session.participants.find(
+        (candidate) => candidate.participantId === participantId,
+      );
+      return participant?.status === 'ACTIVE' && participant.hp <= 0;
+    });
+    if (ids.length === 0) return;
+    const order = session.nextEliminationOrder++;
+    for (const participantId of ids) {
+      const participant = session.participants.find(
+        (candidate) => candidate.participantId === participantId,
+      )!;
+      participant.status = 'ELIMINATED';
+      participant.eliminatedAt = Date.now();
+      participant.eliminationOrder = order;
+      participant.rank = undefined;
+    }
+  }
+
+  private incrementWordsTypedCompatibility(
+    session: AcidRainSession,
+    participantId: string,
+  ): void {
+    if (participantId === session.host.userId) session.wordsTyped.host++;
+    if (participantId === session.guest.userId) session.wordsTyped.guest++;
+  }
+
+  private syncCompatibilityHp(session: AcidRainSession): void {
+    session.hp.host = session.hpByParticipantId[session.host.userId] ?? 0;
+    session.hp.guest = session.hpByParticipantId[session.guest.userId] ?? 0;
+  }
+
+  private syncCanonicalFromCompatibility(session: AcidRainSession): void {
+    if (session.participants.length !== 2) return;
+    const host = session.participants.find(
+      (participant) => participant.participantId === session.host.userId,
+    );
+    const guest = session.participants.find(
+      (participant) => participant.participantId === session.guest.userId,
+    );
+    if (!host || !guest) return;
+    host.hp = session.hp.host;
+    guest.hp = session.hp.guest;
+    session.hpByParticipantId[host.participantId] = host.hp;
+    session.hpByParticipantId[guest.participantId] = guest.hp;
+    if (host.hp <= 0 || guest.hp <= 0) {
+      this.eliminateBatch(
+        session,
+        [host, guest]
+          .filter((participant) => participant.hp <= 0)
+          .map((participant) => participant.participantId),
+      );
+    }
   }
 
   private wordState(
@@ -1001,26 +1259,11 @@ export class AcidRainService implements OnModuleInit {
   }
 
   private participantStates(session: AcidRainSession): ParticipantState[] {
-    return [
-      {
-        participantId: session.host.userId,
-        userId: session.host.userId,
-        nickname: session.host.nickname,
-        type: 'HUMAN',
-        hp: session.hp.host,
-      },
-      {
-        participantId: session.guest.userId,
-        userId: session.guest.userId,
-        nickname: session.guest.nickname,
-        type: 'HUMAN',
-        hp: session.hp.guest,
-      },
-    ];
+    return session.participants.map((participant) => ({ ...participant }));
   }
 
   private hpByParticipantId(session: AcidRainSession): HpByParticipantId {
-    return this.hpPairToParticipantHp(session, session.hp);
+    return { ...session.hpByParticipantId };
   }
 
   private hpPairToParticipantHp(
@@ -1041,6 +1284,71 @@ export class AcidRainService implements OnModuleInit {
       [session.host.userId]: wordsTyped.host,
       [session.guest.userId]: wordsTyped.guest,
     };
+  }
+
+  private allWordsTypedByParticipantId(
+    session: AcidRainSession,
+  ): Record<string, number> {
+    return Object.fromEntries(
+      session.participants.map((participant) => [
+        participant.participantId,
+        participant.wordsTyped,
+      ]),
+    );
+  }
+
+  private calculateRanking(
+    session: AcidRainSession,
+    reason: MatchEndReason,
+  ): RankingEntry[] {
+    const participants = [...session.participants];
+    if (reason === 'TIME_LIMIT') {
+      participants.sort((a, b) => b.hp - a.hp || b.wordsTyped - a.wordsTyped);
+      const entries: RankingEntry[] = [];
+      let previous: ParticipantRuntime | undefined;
+      let rank = 0;
+      for (let index = 0; index < participants.length; index++) {
+        const current = participants[index];
+        if (
+          !previous ||
+          current.hp !== previous.hp ||
+          current.wordsTyped !== previous.wordsTyped
+        ) {
+          rank = index + 1;
+        }
+        entries.push({ participantId: current.participantId, rank });
+        previous = current;
+      }
+      return entries;
+    }
+
+    const alive = participants.filter(
+      (participant) => participant.status === 'ACTIVE',
+    );
+    const eliminated = participants
+      .filter((participant) => participant.status === 'ELIMINATED')
+      .sort((a, b) => (b.eliminationOrder ?? 0) - (a.eliminationOrder ?? 0));
+    const ordered = [...alive, ...eliminated];
+    const entries: RankingEntry[] = [];
+    let rank = 0;
+    let previousOrder: number | undefined;
+    ordered.forEach((participant, index) => {
+      const order =
+        participant.status === 'ACTIVE'
+          ? Number.MAX_SAFE_INTEGER
+          : participant.eliminationOrder;
+      if (index === 0 || order !== previousOrder) rank = index + 1;
+      entries.push({ participantId: participant.participantId, rank });
+      previousOrder = order;
+    });
+    return entries;
+  }
+
+  private rankingForParticipants(
+    session: AcidRainSession,
+    snapshot: MatchFinalizationSnapshot,
+  ): RankingEntry[] {
+    return this.calculateRanking(session, snapshot.reason);
   }
 
   private rankingForCurrentOneVsOne(
