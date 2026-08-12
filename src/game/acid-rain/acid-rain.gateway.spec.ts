@@ -6,6 +6,8 @@ import { AcidRainGateway } from './acid-rain.gateway';
 import { AcidRainService } from './acid-rain.service';
 import { AiPracticeService } from '../ai-practice.service';
 import { ChatGateway } from '../../chat/chat.gateway';
+import { GameService } from '../game.service';
+import { LobbyService } from '../../lobby/lobby.service';
 import {
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
@@ -56,6 +58,8 @@ describe('AcidRainGateway word_submit', () => {
       acidRainService as unknown as AcidRainService,
       aiPracticeService as unknown as AiPracticeService,
       chatGateway as unknown as ChatGateway,
+      {} as GameService,
+      {} as LobbyService,
     );
     server = {} as Server;
     gateway.server = server;
@@ -272,6 +276,8 @@ describe('AcidRainGateway spectate_room (#70)', () => {
       acidRainService as unknown as AcidRainService,
       aiPracticeService as unknown as AiPracticeService,
       chatGateway as unknown as ChatGateway,
+      {} as GameService,
+      {} as LobbyService,
     );
     gateway.server = {} as Server;
 
@@ -345,6 +351,8 @@ describe('AcidRainGateway leave_spectate / disconnect (#70)', () => {
       acidRainService as unknown as AcidRainService,
       aiPracticeService as unknown as AiPracticeService,
       chatGateway as unknown as ChatGateway,
+      {} as GameService,
+      {} as LobbyService,
     );
     gateway.server = {} as Server;
 
@@ -408,6 +416,8 @@ describe('AcidRainGateway join_room concurrency (#144)', () => {
   let redisService: { get: jest.Mock };
   let aiPracticeService: { getAiPracticeSession: jest.Mock };
   let chatGateway: { sendSystemMessage: jest.Mock };
+  let gameService: { startGame: jest.Mock };
+  let lobbyService: { broadcast: jest.Mock<void, [string, unknown]> };
   let server: Server;
   let emitMock: jest.Mock;
   let joinedSockets: Set<string>;
@@ -451,6 +461,20 @@ describe('AcidRainGateway join_room concurrency (#144)', () => {
     };
     aiPracticeService = { getAiPracticeSession: jest.fn() };
     chatGateway = { sendSystemMessage: jest.fn().mockResolvedValue(undefined) };
+    gameService = {
+      startGame: jest.fn().mockResolvedValue({
+        id: 'room-1',
+        hostUserId: 'host-id',
+        maxPlayers: 2,
+        status: 'IN_GAME',
+        players: [
+          { userId: 'host-id', nickname: 'host', ready: true },
+          { userId: 'guest-id', nickname: 'guest', ready: true },
+        ],
+        createdAt: '2026-08-12T00:00:00.000Z',
+      }),
+    };
+    lobbyService = { broadcast: jest.fn<void, [string, unknown]>() };
     gateway = new AcidRainGateway(
       {} as JwtService,
       {} as UserService,
@@ -458,6 +482,8 @@ describe('AcidRainGateway join_room concurrency (#144)', () => {
       acidRainService as unknown as AcidRainService,
       aiPracticeService as unknown as AiPracticeService,
       chatGateway as unknown as ChatGateway,
+      gameService as unknown as GameService,
+      lobbyService as unknown as LobbyService,
     );
 
     emitMock = jest.fn();
@@ -488,5 +514,26 @@ describe('AcidRainGateway join_room concurrency (#144)', () => {
       expect.objectContaining({ roomId: 'room-1' }),
     );
     expect(acidRainService.startMatch).toHaveBeenCalledTimes(1);
+  });
+
+  it('transitions the room to IN_GAME and broadcasts ROOM_UPDATED to the lobby when the match actually starts (#153)', async () => {
+    const host = makeClient('host-id', 'host', 'socket-host');
+    const guest = makeClient('guest-id', 'guest', 'socket-guest');
+
+    await Promise.all([
+      gateway.handleJoinRoom(host, { roomId: 'room-1' }),
+      gateway.handleJoinRoom(guest, { roomId: 'room-1' }),
+    ]);
+
+    expect(gameService.startGame).toHaveBeenCalledWith('room-1');
+    const roomUpdatedCall = lobbyService.broadcast.mock.calls.find(
+      ([type]) => type === 'ROOM_UPDATED',
+    );
+    expect(roomUpdatedCall?.[1]).toEqual({
+      room: expect.objectContaining({
+        id: 'room-1',
+        status: 'IN_GAME',
+      }) as unknown,
+    });
   });
 });

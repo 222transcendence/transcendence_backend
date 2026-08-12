@@ -394,3 +394,88 @@ describe('LobbyGateway disconnect cleanup (#145)', () => {
     expect(gameService.leaveRoom).toHaveBeenCalledWith('room-A', 'user-1');
   });
 });
+
+describe('LobbyGateway SET_READY → GAME_START (#153)', () => {
+  let gateway: LobbyGateway;
+  let gameService: {
+    setReady: jest.Mock;
+    startGame: jest.Mock;
+  };
+  let lobbyService: {
+    broadcast: jest.Mock<void, [string, unknown]>;
+    clearRoomForAllClients: jest.Mock;
+  };
+  let client: LobbyClient;
+
+  const readyRoom = (allReady: boolean) => ({
+    id: 'room-1',
+    hostUserId: 'user-1',
+    maxPlayers: 2,
+    players: [
+      { userId: 'user-1', nickname: 'host', ready: true },
+      { userId: 'user-2', nickname: 'guest', ready: allReady },
+    ],
+    status: 'WAITING',
+    createdAt: '2026-08-12T00:00:00.000Z',
+  });
+
+  beforeEach(() => {
+    gameService = {
+      setReady: jest.fn(),
+      startGame: jest.fn(),
+    };
+    lobbyService = {
+      broadcast: jest.fn<void, [string, unknown]>(),
+      clearRoomForAllClients: jest.fn(),
+    };
+    gateway = new LobbyGateway(
+      {} as JwtService,
+      {} as UserService,
+      gameService as unknown as GameService,
+      { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+      lobbyService as unknown as LobbyService,
+      { sendSystemMessage: jest.fn() } as unknown as ChatGateway,
+    );
+    client = {
+      ws: {} as LobbyClient['ws'],
+      userId: 'user-2',
+      nickname: 'guest',
+    };
+  });
+
+  async function handle(type: string, payload?: unknown) {
+    const callable = gateway as unknown as {
+      handleMessage: (
+        client: LobbyClient,
+        msg: { type: string; payload?: unknown },
+      ) => Promise<void>;
+    };
+    await callable.handleMessage(client, { type, payload });
+  }
+
+  it('broadcasts GAME_START when everyone is ready, without touching room status itself (#153)', async () => {
+    // 방 상태를 IN_GAME으로 바꾸는 책임은 AcidRainGateway.handleJoinRoom로 옮겨졌다 —
+    // 여기서 미리 바꾸면 참가자 본인의 join_room이 "Room is not waiting"으로 거부되는
+    // 회귀가 생긴다(#153 수정 중 실제로 재현/발견됨).
+    gameService.setReady.mockResolvedValue(readyRoom(true));
+
+    await handle('SET_READY', { roomId: 'room-1', ready: true });
+
+    expect(gameService.startGame).not.toHaveBeenCalled();
+    expect(lobbyService.broadcast).toHaveBeenCalledWith('GAME_START', {
+      roomId: 'room-1',
+    });
+  });
+
+  it('does not broadcast GAME_START while a player is still not ready', async () => {
+    gameService.setReady.mockResolvedValue(readyRoom(false));
+
+    await handle('SET_READY', { roomId: 'room-1', ready: false });
+
+    expect(gameService.startGame).not.toHaveBeenCalled();
+    expect(lobbyService.broadcast).not.toHaveBeenCalledWith(
+      'GAME_START',
+      expect.anything(),
+    );
+  });
+});

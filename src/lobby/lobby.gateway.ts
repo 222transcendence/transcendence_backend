@@ -360,7 +360,10 @@ export class LobbyGateway implements OnModuleInit {
         const lobbyRoom = toLobbyRoom(room);
         this.lobbyService.broadcast('ROOM_UPDATED', { room: lobbyRoom });
 
-        // 전원 ready + 최소 2명 → GAME_START
+        // 전원 ready + 최소 2명 → GAME_START. 방 상태를 IN_GAME으로 전이하는 시점은
+        // 여기가 아니라 AcidRainGateway.handleJoinRoom이 실제로 매치를 시작하는 순간이다
+        // (#153) — 여기서 미리 IN_GAME으로 바꾸면 참가자 본인의 join_room이 "Room is not
+        // waiting"으로 거부되어 게임 자체가 시작되지 않는 회귀가 생긴다.
         const allReady =
           lobbyRoom.players.length >= 2 &&
           lobbyRoom.players.every((p) => p.ready);
