@@ -849,13 +849,13 @@ export class AcidRainService implements OnModuleInit {
           this.assertStatsUpdated(winnerUpdate, 'winner wins');
           this.assertStatsUpdated(loserUpdate, 'loser losses');
         } else {
-          // 무승부: 둘 다 losses 증가
+          // 무승부: 승패 어느 쪽도 아니지만 게임을 하긴 했으므로 draws로 카운트한다.
           const [hostUpdate, guestUpdate] = await Promise.all([
-            userRepo.increment({ id: session.host.userId }, 'losses', 1),
-            userRepo.increment({ id: session.guest.userId }, 'losses', 1),
+            userRepo.increment({ id: session.host.userId }, 'draws', 1),
+            userRepo.increment({ id: session.guest.userId }, 'draws', 1),
           ]);
-          this.assertStatsUpdated(hostUpdate, 'host losses');
-          this.assertStatsUpdated(guestUpdate, 'guest losses');
+          this.assertStatsUpdated(hostUpdate, 'host draws');
+          this.assertStatsUpdated(guestUpdate, 'guest draws');
         }
       });
     } catch (err) {

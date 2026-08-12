@@ -1085,6 +1085,25 @@ describe('AcidRainService', () => {
       );
     });
 
+    it('a tied TIME_LIMIT is a draw: winnerId is null and neither wins nor losses change', async () => {
+      await service.startMatch(ROOM_ID, HOST, GUEST, server);
+      await jest.advanceTimersByTimeAsync(3000);
+      const session = service.getSession(ROOM_ID)!;
+      session.hp.host = 55;
+      session.hp.guest = 55;
+
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended[0]).toEqual(
+        expect.objectContaining({ reason: 'TIME_LIMIT', winnerId: null }),
+      );
+      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: HOST.userId }, 'draws', 1);
+      expect(mockUserRepository.increment).toHaveBeenCalledWith({ id: GUEST.userId }, 'draws', 1);
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'wins', 1);
+      expect(mockUserRepository.increment).not.toHaveBeenCalledWith(expect.anything(), 'losses', 1);
+    });
+
     it('runs match finalization side effects only once for repeated endMatch calls', async () => {
       await service.startMatch(ROOM_ID, HOST, GUEST, server);
       await jest.advanceTimersByTimeAsync(3000);
