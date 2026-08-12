@@ -149,6 +149,19 @@ export class GameService {
     return room;
   }
 
+  /** 전원 ready로 게임이 실제로 시작될 때 방 상태를 IN_GAME으로 전이한다 (#153) —
+   *  이걸 안 하면 로비 목록에서 이미 시작된 방이 계속 WAITING(참가 가능)으로 보인다. */
+  async startGame(roomId: string): Promise<GameRoom> {
+    const roomKey = `game:room:${roomId}`;
+    const data = await this.redisService.get(roomKey);
+    if (!data) throw new NotFoundException('Game room not found');
+
+    const room = JSON.parse(data) as GameRoom;
+    room.status = RoomStatus.IN_GAME;
+    await this.redisService.set(roomKey, JSON.stringify(room), ROOM_TTL);
+    return room;
+  }
+
   async getWaitingRooms(): Promise<GameRoom[]> {
     const client = this.redisService.getClient();
     const keys = await client.keys('game:room:*');

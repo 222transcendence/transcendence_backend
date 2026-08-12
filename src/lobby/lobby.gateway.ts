@@ -365,6 +365,14 @@ export class LobbyGateway implements OnModuleInit {
           lobbyRoom.players.length >= 2 &&
           lobbyRoom.players.every((p) => p.ready);
         if (allReady) {
+          // 방 상태를 IN_GAME으로 전이하고 로비 전체에 다시 브로드캐스트한다 — 이 방에
+          // 속하지 않은 다른 유저의 로비 화면에서도 "참가하기"가 "관전하기"로 바뀌도록
+          // 하기 위함 (#153). 이걸 안 하면 방이 영원히 WAITING으로 보여 참가 시도가
+          // 실패하거나, 관전 가능 방 목록(LIST_SPECTATABLE_ROOMS)에도 절대 나타나지 않는다.
+          const startedRoom = await this.gameService.startGame(roomId);
+          this.lobbyService.broadcast('ROOM_UPDATED', {
+            room: toLobbyRoom(startedRoom),
+          });
           this.lobbyService.clearRoomForAllClients(roomId);
           this.lobbyService.broadcast('GAME_START', { roomId });
         }

@@ -70,4 +70,35 @@ describe('GameService public room lifecycle', () => {
     const left = await service.leaveRoom(room.id, 'user-2');
     expect(left?.players).toHaveLength(1);
   });
+
+  describe('startGame (#153)', () => {
+    it('transitions the room to IN_GAME and persists it', async () => {
+      const room = await service.createRoom('user-1', 'host', 2);
+      await service.joinRoom(room.id, 'user-2', 'guest');
+
+      const started = await service.startGame(room.id);
+
+      expect(started.status).toBe('IN_GAME');
+      await expect(service.getRoom(room.id)).resolves.toEqual(
+        expect.objectContaining({ status: 'IN_GAME' }),
+      );
+    });
+
+    it('removes the room from getWaitingRooms and surfaces it via getSpectatableRooms', async () => {
+      const room = await service.createRoom('user-1', 'host', 2);
+      await service.joinRoom(room.id, 'user-2', 'guest');
+      await service.startGame(room.id);
+
+      await expect(service.getWaitingRooms()).resolves.toEqual([]);
+      await expect(service.getSpectatableRooms()).resolves.toEqual([
+        expect.objectContaining({ id: room.id, status: 'IN_GAME' }),
+      ]);
+    });
+
+    it('throws NotFoundException for a room that does not exist', async () => {
+      await expect(service.startGame('missing-room')).rejects.toThrow(
+        'Game room not found',
+      );
+    });
+  });
 });

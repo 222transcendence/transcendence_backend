@@ -394,3 +394,101 @@ describe('LobbyGateway disconnect cleanup (#145)', () => {
     expect(gameService.leaveRoom).toHaveBeenCalledWith('room-A', 'user-1');
   });
 });
+
+describe('LobbyGateway SET_READY → GAME_START (#153)', () => {
+  let gateway: LobbyGateway;
+  let gameService: {
+    setReady: jest.Mock;
+    startGame: jest.Mock;
+  };
+  let lobbyService: {
+    broadcast: jest.Mock<void, [string, unknown]>;
+    clearRoomForAllClients: jest.Mock;
+  };
+  let client: LobbyClient;
+
+  const readyRoom = (allReady: boolean) => ({
+    id: 'room-1',
+    hostUserId: 'user-1',
+    maxPlayers: 2,
+    players: [
+      { userId: 'user-1', nickname: 'host', ready: true },
+      { userId: 'user-2', nickname: 'guest', ready: allReady },
+    ],
+    status: 'WAITING',
+    createdAt: '2026-08-12T00:00:00.000Z',
+  });
+
+  beforeEach(() => {
+    gameService = {
+      setReady: jest.fn(),
+      startGame: jest.fn(),
+    };
+    lobbyService = {
+      broadcast: jest.fn<void, [string, unknown]>(),
+      clearRoomForAllClients: jest.fn(),
+    };
+    gateway = new LobbyGateway(
+      {} as JwtService,
+      {} as UserService,
+      gameService as unknown as GameService,
+      { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+      lobbyService as unknown as LobbyService,
+      { sendSystemMessage: jest.fn() } as unknown as ChatGateway,
+    );
+    client = {
+      ws: {} as LobbyClient['ws'],
+      userId: 'user-2',
+      nickname: 'guest',
+    };
+  });
+
+  async function handle(type: string, payload?: unknown) {
+    const callable = gateway as unknown as {
+      handleMessage: (
+        client: LobbyClient,
+        msg: { type: string; payload?: unknown },
+      ) => Promise<void>;
+    };
+    await callable.handleMessage(client, { type, payload });
+  }
+
+  it('starts the game and broadcasts an IN_GAME ROOM_UPDATED when everyone is ready', async () => {
+    gameService.setReady.mockResolvedValue(readyRoom(true));
+    gameService.startGame.mockResolvedValue({
+      ...readyRoom(true),
+      status: 'IN_GAME',
+    });
+
+    await handle('SET_READY', { roomId: 'room-1', ready: true });
+
+    expect(gameService.startGame).toHaveBeenCalledWith('room-1');
+    // 준비 완료 토글 시점에도 ROOM_UPDATED가 한 번 나가므로(기존 동작), IN_GAME으로
+    // 전이된 두 번째 ROOM_UPDATED를 찾는다.
+    const roomUpdatedCalls = lobbyService.broadcast.mock.calls.filter(
+      ([type]) => type === 'ROOM_UPDATED',
+    );
+    const startedRoomUpdate = roomUpdatedCalls.at(-1);
+    expect(startedRoomUpdate?.[1]).toEqual({
+      room: expect.objectContaining({
+        id: 'room-1',
+        status: 'IN_GAME',
+      }) as unknown,
+    });
+    expect(lobbyService.broadcast).toHaveBeenCalledWith('GAME_START', {
+      roomId: 'room-1',
+    });
+  });
+
+  it('does not start the game while a player is still not ready', async () => {
+    gameService.setReady.mockResolvedValue(readyRoom(false));
+
+    await handle('SET_READY', { roomId: 'room-1', ready: false });
+
+    expect(gameService.startGame).not.toHaveBeenCalled();
+    expect(lobbyService.broadcast).not.toHaveBeenCalledWith(
+      'GAME_START',
+      expect.anything(),
+    );
+  });
+});
