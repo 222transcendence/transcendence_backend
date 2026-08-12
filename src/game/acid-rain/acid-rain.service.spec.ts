@@ -2,11 +2,13 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { Server, Socket } from 'socket.io';
 import { AcidRainService } from './acid-rain.service';
+import { AiScheduler } from './ai/ai-scheduler';
 import { ACID_RAIN_RANDOM } from './acid-rain.service';
 import { RedisService } from '../../redis/redis.service';
 import { LobbyService } from '../../lobby/lobby.service';
 import { ChatGateway } from '../../chat/chat.gateway';
 import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
+import { PerformanceService } from './performance.service';
 import { MatchHistory } from '../entities/match-history.entity';
 import { MatchParticipant } from '../entities/match-participant.entity';
 import { User, UserStatus } from '../../user/entities/user.entity';
@@ -49,7 +51,6 @@ interface MatchEndPayload {
 }
 interface OpponentDisconnectedPayload {
   userId: string;
-  graceMs: number;
 }
 interface OpponentReconnectedPayload {
   userId: string;
@@ -76,6 +77,12 @@ describe('AcidRainService', () => {
   let emitSpy: jest.Mock<void, [string, unknown]>;
   let server: Server;
   let randomMock: jest.Mock<number, []>;
+  let mockAiScheduler: {
+    registerRoom: jest.Mock;
+    onStateChange: jest.Mock;
+    invalidate: jest.Mock;
+    destroy: jest.Mock;
+  };
 
   const HOST = { userId: 'host-id', nickname: 'hostNick' };
   const GUEST = { userId: 'guest-id', nickname: 'guestNick' };
@@ -176,6 +183,11 @@ describe('AcidRainService', () => {
     pickWord: jest.fn().mockReturnValue({ text: '테스트', keystrokes: 6 }),
   };
 
+  const mockPerformanceService = {
+    flushWordAttempt: jest.fn().mockResolvedValue(undefined),
+    saveParticipantPerformances: jest.fn().mockResolvedValue(undefined),
+  };
+
   const mockRedisService = {
     set: jest.fn().mockImplementation((key: string, value: string) => {
       redisStore[key] = value;
@@ -219,6 +231,10 @@ describe('AcidRainService', () => {
     mockMatchParticipantRepository.save.mockResolvedValue([]);
     mockMatchHistoryRepository.create.mockImplementation((dto: unknown) => dto);
     mockMatchHistoryRepository.save.mockResolvedValue({});
+    mockMatchParticipantRepository.create.mockImplementation(
+      (dto: unknown) => dto,
+    );
+    mockMatchParticipantRepository.save.mockResolvedValue({});
     mockMatchHistoryRepository.manager.transaction.mockImplementation(
       async (
         work: (manager: {
@@ -250,6 +266,12 @@ describe('AcidRainService', () => {
 
     emitSpy = jest.fn<void, [string, unknown]>();
     randomMock = jest.fn<number, []>().mockReturnValue(0);
+    mockAiScheduler = {
+      registerRoom: jest.fn(),
+      onStateChange: jest.fn(),
+      invalidate: jest.fn(),
+      destroy: jest.fn(),
+    };
     const toSpy = jest.fn().mockReturnValue({ emit: emitSpy });
     server = { to: toSpy } as unknown as Server;
 
@@ -265,7 +287,9 @@ describe('AcidRainService', () => {
         { provide: LobbyService, useValue: mockLobbyService },
         { provide: ChatGateway, useValue: mockChatGateway },
         { provide: WordDictionaryService, useValue: mockWordDictionaryService },
+        { provide: PerformanceService, useValue: mockPerformanceService },
         { provide: ACID_RAIN_RANDOM, useValue: randomMock },
+        { provide: AiScheduler, useValue: mockAiScheduler },
       ],
     }).compile();
 
@@ -563,6 +587,32 @@ describe('AcidRainService', () => {
       );
     });
 
+    it('rejects a word_submit from an eliminated participant and leaves everyone else untouched (#157)', async () => {
+      await startParticipants(threePlayers);
+      const session = service.getSession(ROOM_ID)!;
+      const eliminated = session.participants[2];
+      eliminated.hp = 0;
+      eliminated.status = 'ELIMINATED';
+      const hostHpBefore = session.participants[0].hp;
+      const guestHpBefore = session.participants[1].hp;
+      addActiveWord(ROOM_ID, 'w-elim', '공격');
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: 'player-3',
+        wordId: 'w-elim',
+        text: '공격',
+      });
+
+      assertRejected(result);
+      expect(result.reason).toBe('PLAYER_ELIMINATED');
+      expect(session.participants[0].hp).toBe(hostHpBefore);
+      expect(session.participants[1].hp).toBe(guestHpBefore);
+      // 탈락자 본인이 지우려던 단어도 여전히 ACTIVE로 남아 있어야 한다(멋대로 지워지지 않음).
+      expect(service.getSession(ROOM_ID)!.activeWords.has('w-elim')).toBe(true);
+      expect(eventsNamed('word_cleared')).toHaveLength(0);
+    });
+
     it('clears with zero damage when no living target exists and preserves 1:1 targetHp', async () => {
       await startParticipants([
         {
@@ -751,7 +801,7 @@ describe('AcidRainService', () => {
       );
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
-      ).toEqual({
+      ).toMatchObject({
         state: 'CLEARED',
         playerId: HOST.userId,
         attemptId: undefined,
@@ -771,7 +821,7 @@ describe('AcidRainService', () => {
       });
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
-      ).toEqual({
+      ).toMatchObject({
         state: 'MISSED',
       });
     });
@@ -1066,7 +1116,7 @@ describe('AcidRainService', () => {
       expect(guestCorrect.accepted).toBe(true);
       expect(
         service.getSession(ROOM_ID)?.resolvedWords.get(word.wordId),
-      ).toEqual({
+      ).toMatchObject({
         state: 'CLEARED',
         playerId: GUEST.userId,
         attemptId: 'shared-attempt',
@@ -1577,6 +1627,57 @@ describe('AcidRainService', () => {
       expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
     });
 
+    it('leaveMatch forfeits only the leaving participant in a 3-player match — the other two keep playing', async () => {
+      const THIRD = {
+        participantId: 'player-3',
+        userId: 'player-3',
+        nickname: 'p3',
+        type: 'HUMAN' as const,
+      };
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT, THIRD]);
+
+      await service.leaveMatch(ROOM_ID, HOST.userId, server);
+
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
+      const session = service.getSession(ROOM_ID)!;
+      const host = session.participants.find(
+        (p) => p.participantId === HOST.userId,
+      )!;
+      expect(host.status).toBe('ELIMINATED');
+      expect(host.hp).toBe(0);
+      const survivors = session.participants.filter(
+        (p) => p.status === 'ACTIVE',
+      );
+      expect(survivors.map((p) => p.participantId).sort()).toEqual(
+        [GUEST.userId, 'player-3'].sort(),
+      );
+    });
+
+    it('leaveMatch ends the match once a 3-player forfeit leaves exactly one survivor', async () => {
+      const THIRD = {
+        participantId: 'player-3',
+        userId: 'player-3',
+        nickname: 'p3',
+        type: 'HUMAN' as const,
+      };
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT, THIRD]);
+      const session = service.getSession(ROOM_ID)!;
+      const third = session.participants.find(
+        (p) => p.participantId === 'player-3',
+      )!;
+      third.hp = 0;
+      third.status = 'ELIMINATED';
+      third.eliminationOrder = 1;
+
+      await service.leaveMatch(ROOM_ID, HOST.userId, server);
+
+      const ended = eventsNamed<MatchEndPayload>('match_end');
+      expect(ended).toHaveLength(1);
+      expect(ended[0]).toEqual(
+        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
+      );
+    });
+
     it('commits match history and stats once when finalization is retried after partial DB failure', async () => {
       await service.startMatch(ROOM_ID, server, TWO_PLAYERS);
       await jest.advanceTimersByTimeAsync(3000);
@@ -1678,62 +1779,52 @@ describe('AcidRainService', () => {
     });
   });
 
-  describe('disconnect / reconnect', () => {
-    it('starts a 30s grace period and forfeits to the opponent if no reconnect', async () => {
-      await service.startMatch(ROOM_ID, server, TWO_PLAYERS);
-      await jest.advanceTimersByTimeAsync(3000);
-
-      service.handleDisconnect(ROOM_ID, HOST.userId, server);
-      expect(
-        eventsNamed<OpponentDisconnectedPayload>('opponent_disconnected'),
-      ).toContainEqual({
-        userId: HOST.userId,
-        graceMs: 30_000,
-      });
-
-      await jest.advanceTimersByTimeAsync(30_000);
-
-      const ended = eventsNamed<MatchEndPayload>('match_end');
-      expect(ended).toContainEqual(
-        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
-      );
-    });
-
-    it('retries FORFEIT finalization failure with the original override winner', async () => {
+  describe('disconnect / reconnect (#161 — no forced forfeit on disconnect)', () => {
+    it('broadcasts opponent_disconnected without a grace deadline and does not end the match even long after the old 30s window', async () => {
       await service.startMatch(ROOM_ID, server, TWO_PLAYERS);
       await jest.advanceTimersByTimeAsync(3000);
       const session = service.getSession(ROOM_ID)!;
       if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
       if (session.missLoopTimer) clearInterval(session.missLoopTimer);
-      mockRedisService.del
-        .mockRejectedValueOnce(new Error('redis down'))
-        .mockImplementation((key: string) => {
-          delete redisStore[key];
-          return Promise.resolve();
-        });
-      emitSpy.mockClear();
 
       service.handleDisconnect(ROOM_ID, HOST.userId, server);
-      await jest.advanceTimersByTimeAsync(30_000);
-      expect(service.getSession(ROOM_ID)?.status).toBe('FINISHED');
-      expect(eventsNamed<MatchEndPayload>('match_end')).toEqual([
-        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
-      ]);
+      expect(
+        eventsNamed<OpponentDisconnectedPayload>('opponent_disconnected'),
+      ).toContainEqual({ userId: HOST.userId });
 
-      await jest.advanceTimersByTimeAsync(1000);
+      await jest.advanceTimersByTimeAsync(60_000);
 
-      expect(service.getSession(ROOM_ID)).toBeUndefined();
-      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(1);
-      const saved = mockMatchHistoryRepository.save.mock.calls[0][0] as {
-        winner: { id: string } | null;
-        matchData: { reason: string };
-      };
-      expect(saved.winner?.id).toBe(GUEST.userId);
-      expect(saved.matchData.reason).toBe('FORFEIT');
-      expect(mockLobbyService.broadcast).toHaveBeenCalledTimes(1);
+      expect(service.getSession(ROOM_ID)?.status).toBe('IN_PROGRESS');
+      const host = session.participants.find(
+        (participant) => participant.participantId === HOST.userId,
+      )!;
+      expect(host.status).toBe('ACTIVE');
+      expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
     });
 
-    it('cancels the grace timer and sends state_sync on reconnect within the grace period', async () => {
+    it('still lets a disconnected participant be targeted and damaged by others', async () => {
+      await service.startMatch(ROOM_ID, server, TWO_PLAYERS);
+      await jest.advanceTimersByTimeAsync(3000);
+      service.handleDisconnect(ROOM_ID, GUEST.userId, server);
+      randomMock.mockReturnValue(0);
+      addActiveWord(ROOM_ID, 'w-hit-disconnected', '공격');
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'w-hit-disconnected',
+        text: '공격',
+      });
+
+      expect(result.accepted && result.wordCleared.targetParticipantId).toBe(
+        GUEST.userId,
+      );
+      expect(
+        result.accepted && result.wordCleared.hp[GUEST.userId],
+      ).toBeLessThan(100);
+    });
+
+    it('sends state_sync and opponent_reconnected on reconnect', async () => {
       await service.startMatch(ROOM_ID, server, TWO_PLAYERS);
       await jest.advanceTimersByTimeAsync(3000);
       await jest.advanceTimersByTimeAsync(2000); // one word spawned
@@ -1776,67 +1867,50 @@ describe('AcidRainService', () => {
       expect(typeof activeWord.landAt).toBe('string');
       // no tier leaking into the reconnect payload
       expect(activeWord).not.toHaveProperty('tier');
+    });
 
-      // grace timer cancelled: advancing past the original 30s must NOT forfeit
-      await jest.advanceTimersByTimeAsync(30_000);
+    const fourPlayers: ParticipantPublic[] = [
+      {
+        participantId: HOST.userId,
+        userId: HOST.userId,
+        nickname: HOST.nickname,
+        type: 'HUMAN',
+      },
+      {
+        participantId: GUEST.userId,
+        userId: GUEST.userId,
+        nickname: GUEST.nickname,
+        type: 'HUMAN',
+      },
+      {
+        participantId: 'player-3',
+        userId: 'player-3',
+        nickname: 'three',
+        type: 'HUMAN',
+      },
+      {
+        participantId: 'player-4',
+        userId: 'player-4',
+        nickname: 'four',
+        type: 'HUMAN',
+      },
+    ];
+
+    it('does not eliminate anyone in a 4-player match when one participant disconnects (#161)', async () => {
+      await startParticipants(fourPlayers);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.spawnLoopTimer) clearTimeout(session.spawnLoopTimer);
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+
+      service.handleDisconnect(ROOM_ID, 'player-3', server);
+      await jest.advanceTimersByTimeAsync(60_000);
+
       expect(
-        eventsNamed<MatchEndPayload>('match_end').some(
-          (e) => e.reason === 'FORFEIT',
+        session.participants.filter(
+          (participant) => participant.status === 'ACTIVE',
         ),
-      ).toBe(false);
-    });
-
-    it('forfeits only the disconnecting participant in a 3-player match — the other two keep playing', async () => {
-      const THIRD = {
-        participantId: 'player-3',
-        userId: 'player-3',
-        nickname: 'p3',
-        type: 'HUMAN' as const,
-      };
-      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT, THIRD]);
-
-      service.handleDisconnect(ROOM_ID, HOST.userId, server);
-      await jest.advanceTimersByTimeAsync(30_000);
-
+      ).toHaveLength(4);
       expect(eventsNamed<MatchEndPayload>('match_end')).toHaveLength(0);
-      const session = service.getSession(ROOM_ID)!;
-      const host = session.participants.find(
-        (p) => p.participantId === HOST.userId,
-      )!;
-      expect(host.status).toBe('ELIMINATED');
-      expect(host.hp).toBe(0);
-      const survivors = session.participants.filter(
-        (p) => p.status === 'ACTIVE',
-      );
-      expect(survivors.map((p) => p.participantId).sort()).toEqual(
-        [GUEST.userId, 'player-3'].sort(),
-      );
-    });
-
-    it('ends the match once a 3-player forfeit leaves exactly one survivor', async () => {
-      const THIRD = {
-        participantId: 'player-3',
-        userId: 'player-3',
-        nickname: 'p3',
-        type: 'HUMAN' as const,
-      };
-      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT, THIRD]);
-      const session = service.getSession(ROOM_ID)!;
-      const third = session.participants.find(
-        (p) => p.participantId === 'player-3',
-      )!;
-      third.hp = 0;
-      third.status = 'ELIMINATED';
-      third.eliminationOrder = 1;
-
-      service.handleDisconnect(ROOM_ID, HOST.userId, server);
-      await jest.advanceTimersByTimeAsync(30_000);
-
-      const ended = eventsNamed<MatchEndPayload>('match_end');
-      expect(ended).toHaveLength(1);
-      expect(ended[0]).toEqual(
-        expect.objectContaining({ reason: 'FORFEIT', winnerId: GUEST.userId }),
-      );
     });
   });
 
@@ -2227,6 +2301,105 @@ describe('AcidRainService', () => {
   });
 
   describe('#136 AI practice history', () => {
+    it('provides an outbound opponent_typing callback without exposing wordId', async () => {
+      let registration:
+        | {
+            emitTypingProgress: (
+              participantId: string,
+              partialText: string,
+            ) => void;
+          }
+        | undefined;
+      mockAiScheduler.registerRoom.mockImplementation((value: unknown) => {
+        registration = value as {
+          emitTypingProgress: (
+            participantId: string,
+            partialText: string,
+          ) => void;
+        };
+      });
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:room-1',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+
+      registration!.emitTypingProgress('ai:room-1', '가');
+
+      expect(emitSpy).toHaveBeenCalledWith('opponent_typing', {
+        participantId: 'ai:room-1',
+        partialText: '가',
+      });
+      expect(emitSpy.mock.calls.at(-1)?.[1]).not.toHaveProperty('wordId');
+    });
+
+    it('registers and cleans the AI scheduler through finalizeMatch', async () => {
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:room-1',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+
+      expect(mockAiScheduler.registerRoom).toHaveBeenCalledWith(
+        expect.objectContaining({
+          roomId: ROOM_ID,
+          aiParticipantId: 'ai:room-1',
+          difficulty: 'NORMAL',
+        }),
+      );
+      await service.endMatch(ROOM_ID, 'FORFEIT', server);
+      expect(mockAiScheduler.invalidate).toHaveBeenCalledWith(ROOM_ID);
+      expect(mockAiScheduler.destroy).toHaveBeenCalledWith(ROOM_ID);
+    });
+
+    it('does not advance stateVersion for rejected submit and advances for accepted clear', async () => {
+      const word = await startAndReachFirstSpawn();
+      const session = service.getSession(ROOM_ID)!;
+      const beforeRejected = session.stateVersion;
+      const rejected = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: 'wrong',
+        attemptId: 'rejected-state-version',
+      });
+      expect(rejected.accepted).toBe(false);
+      expect(session.stateVersion).toBe(beforeRejected);
+
+      await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: word.wordId,
+        text: word.text,
+        attemptId: 'accepted-state-version',
+      });
+      expect(session.stateVersion).toBeGreaterThan(beforeRejected);
+    });
+
     it('does not look up an AI participant as a User winner and skips PvP statistics', async () => {
       const aiId = 'ai:practice';
       await startParticipants(

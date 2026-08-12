@@ -44,10 +44,14 @@ import {
   WordResolutionState,
 } from './acid-rain.interface';
 import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
+import { PerformanceService } from './performance.service';
+import { AiScheduler } from './ai/ai-scheduler';
+import { AiExecutor } from './ai/ai-executor';
+import { toAiRuntimeWords } from './ai/active-word.mapper';
+import type { AiStateChange } from './ai/ai-execution.types';
 
 const INITIAL_HP = 100;
 const MATCH_DURATION_MS = 180_000;
-const GRACE_PERIOD_MS = 30_000;
 const LANE_COUNT = 5;
 const REDIS_TTL = 1800; // seconds
 const ATTEMPT_RESULT_TTL_MS = 5 * 60 * 1000;
@@ -101,11 +105,6 @@ export class AcidRainService implements OnModuleInit {
   private readonly logger = new Logger(AcidRainService.name);
   // roomId → in-memory session (단일 인스턴스 기준)
   private readonly sessions = new Map<string, AcidRainSession>();
-  // roomId → grace timer
-  private readonly graceTimers = new Map<
-    string,
-    ReturnType<typeof setTimeout>
-  >();
   private readonly processedAttempts = new Map<
     string,
     ProcessedAttemptRecord
@@ -126,6 +125,7 @@ export class AcidRainService implements OnModuleInit {
     private readonly lobbyService: LobbyService,
     private readonly wordDictionaryService: WordDictionaryService,
     private readonly chatGateway: ChatGateway,
+    private readonly performanceService: PerformanceService,
     @InjectRepository(MatchHistory)
     private readonly matchHistoryRepo: Repository<MatchHistory>,
     @InjectRepository(User)
@@ -133,6 +133,10 @@ export class AcidRainService implements OnModuleInit {
     @Optional()
     @Inject(ACID_RAIN_RANDOM)
     private readonly random: () => number = Math.random,
+    @Optional()
+    private readonly aiScheduler: AiScheduler = new AiScheduler(
+      new AiExecutor(),
+    ),
   ) {}
 
   async onModuleInit() {
@@ -191,8 +195,28 @@ export class AcidRainService implements OnModuleInit {
       nextEliminationOrder: 1,
       mode,
       status: 'COUNTDOWN',
+      typingTracker: new Map(),
+      stateVersion: 0,
     };
     this.sessions.set(roomId, session);
+    if (mode === 'AI_PRACTICE') {
+      const ai = participants.find((participant) => participant.type === 'AI');
+      if (!ai?.aiDifficulty) {
+        throw new Error('AI practice session is missing AI difficulty');
+      }
+      this.aiScheduler.registerRoom({
+        roomId,
+        aiParticipantId: ai.participantId,
+        difficulty: ai.aiDifficulty,
+        submitWord: (input) => this.submitWord(input, server),
+        emitTypingProgress: (participantId, partialText) => {
+          server.to(`game:${roomId}`).emit('opponent_typing', {
+            participantId,
+            partialText,
+          });
+        },
+      });
+    }
     activeGames.set(this.sessions.size);
     await this.persistSession(session);
 
@@ -292,6 +316,7 @@ export class AcidRainService implements OnModuleInit {
       };
       session.activeWords.set(wordId, active);
       session.occupiedLanes.add(lane);
+      session.stateVersion += 1;
 
       const payload: WordSpawnPayload = {
         wordId,
@@ -305,6 +330,7 @@ export class AcidRainService implements OnModuleInit {
       };
       server.to(`game:${session.roomId}`).emit('word_spawn', payload);
       wordSpawnedTotal.inc();
+      this.notifyAiStateChanged(session, server, 'SPAWN');
       void this.persistSession(session);
 
       // 다음 스폰 간격 계산 후 재귀 호출
@@ -361,11 +387,13 @@ export class AcidRainService implements OnModuleInit {
         };
         server.to(`game:${session.roomId}`).emit('word_missed', payload);
         wordMissedTotal.inc();
+        this.flushMissedWordAttempts(session, wordId);
       }
 
       if (this.aliveParticipants(session).length <= 1) {
         this.safeEndMatch(session.roomId, 'KO', server);
       } else {
+        this.notifyAiStateChanged(session, server, 'MISS');
         void this.persistSession(session);
       }
     }, 200);
@@ -397,16 +425,127 @@ export class AcidRainService implements OnModuleInit {
         .to(`game:${result.roomId}`)
         .emit('word_cleared', result.wordCleared);
       wordClearedTotal.inc();
+      this.flushWordAttemptOnClear(input, result.roomId);
       if (result.gameEnded && outcome.attemptKey) {
         await this.finalizeKoAttempt(outcome.attemptKey, result, server);
       } else if (result.gameEnded) {
         await this.endMatch(result.roomId, 'KO', server);
       } else if (outcome.sessionToPersist) {
+        this.notifyAiStateChanged(outcome.sessionToPersist, server, 'CLEAR');
         await this.persistSession(outcome.sessionToPersist);
       }
     }
 
     return result;
+  }
+
+  private flushWordAttemptOnClear(
+    input: JudgeWordSubmitInput,
+    roomId: string,
+  ): void {
+    const session = this.sessions.get(roomId);
+    if (!session) return;
+    const participant = session.participants.find(
+      (p) => p.participantId === input.playerId,
+    );
+    if (!participant) return;
+    const wordTracker = session.typingTracker.get(input.playerId);
+    const state = wordTracker?.get(input.wordId);
+    const now = new Date();
+    const spawnedAtStr = session.resolvedWords.get(input.wordId)?.spawnedAt;
+    const wordSpawnedAt = spawnedAtStr ? new Date(spawnedAtStr) : null;
+    void this.performanceService
+      .flushWordAttempt({
+        matchId: roomId,
+        participantId: input.playerId,
+        userId: participant.userId,
+        wordId: input.wordId,
+        result: state?.typoCount === 0 ? 'CORRECT' : 'CORRECT_AFTER_CORRECTION',
+        submittedText: input.text,
+        submitReceivedAt: now,
+        resolvedAt: now,
+        wordSpawnedAt,
+        state: state ?? this.emptyWordTypingState(),
+      })
+      .catch((err: unknown) =>
+        this.logger.error('flushWordAttempt error', err),
+      );
+    wordTracker?.delete(input.wordId);
+  }
+
+  private emptyWordTypingState() {
+    return {
+      sequence: 0,
+      firstTypingAt: null,
+      lastTypingAt: null,
+      prevPartialText: '',
+      typoCount: 0,
+      correctionCount: 0,
+      totalKeystrokes: 0,
+      keystrokeBuffer: [],
+    };
+  }
+
+  private flushWrongAttempt(
+    session: AcidRainSession,
+    input: JudgeWordSubmitInput,
+    wordSpawnedAtStr: string,
+    submittedText: string,
+  ): void {
+    const participant = session.participants.find(
+      (p) => p.participantId === input.playerId,
+    );
+    if (!participant || participant.type === 'AI') return;
+    const now = new Date();
+    const wordTracker = session.typingTracker.get(input.playerId);
+    const state = wordTracker?.get(input.wordId) ?? this.emptyWordTypingState();
+    void this.performanceService
+      .flushWordAttempt({
+        matchId: session.roomId,
+        participantId: input.playerId,
+        userId: participant.userId,
+        wordId: input.wordId,
+        result: 'WRONG',
+        submittedText,
+        submitReceivedAt: now,
+        resolvedAt: now,
+        wordSpawnedAt: wordSpawnedAtStr ? new Date(wordSpawnedAtStr) : null,
+        state,
+      })
+      .catch((err: unknown) =>
+        this.logger.error('flushWrongAttempt error', err),
+      );
+  }
+
+  private flushMissedWordAttempts(
+    session: AcidRainSession,
+    wordId: string,
+  ): void {
+    const now = new Date();
+    const spawnedAtStr = session.resolvedWords.get(wordId)?.spawnedAt;
+    const wordSpawnedAt = spawnedAtStr ? new Date(spawnedAtStr) : null;
+    for (const participant of session.participants) {
+      if (participant.type === 'AI') continue;
+      const wordTracker = session.typingTracker.get(participant.participantId);
+      const state = wordTracker?.get(wordId) ?? this.emptyWordTypingState();
+      void this.performanceService
+        .flushWordAttempt({
+          matchId: session.roomId,
+          participantId: participant.participantId,
+          userId: participant.userId,
+          wordId,
+          result: 'MISSED',
+          submittedText: null,
+          submitReceivedAt: null,
+          resolvedAt: now,
+          wordSpawnedAt,
+          state,
+        })
+        .catch((err: unknown) =>
+          this.logger.error('flushWordAttempt(missed) error', err),
+        );
+      wordTracker?.delete(wordId);
+    }
   }
 
   private judgeWordSubmitCore(input: JudgeWordSubmitInput): JudgeCoreOutcome {
@@ -450,6 +589,20 @@ export class AcidRainService implements OnModuleInit {
       );
     }
 
+    // 탈락한 참가자는 맞을 수 없을 뿐 아니라(selectAttackTarget이 이미 걸러줌) 본인이
+    // 단어를 지워 다른 생존자를 공격하는 것도 막아야 한다 — 3~4인 매치에서 이 검사가
+    // 없으면 탈락자가 계속 게임에 영향을 줄 수 있었다.
+    const submitter = session.participants.find(
+      (participant) => participant.participantId === playerId,
+    );
+    if (!submitter || submitter.status !== 'ACTIVE' || submitter.hp <= 0) {
+      return this.recordOutcome(
+        attemptKey,
+        input,
+        this.rejected(input, 'PLAYER_ELIMINATED', undefined, session),
+      );
+    }
+
     const resolved = session.resolvedWords.get(wordId);
     if (resolved) {
       return this.recordOutcome(
@@ -469,6 +622,7 @@ export class AcidRainService implements OnModuleInit {
     }
 
     if (word.text !== text) {
+      this.flushWrongAttempt(session, input, word.spawnedAt, text);
       return this.recordOutcome(
         attemptKey,
         input,
@@ -489,10 +643,7 @@ export class AcidRainService implements OnModuleInit {
       );
     }
 
-    const actor = session.participants.find(
-      (participant) => participant.participantId === playerId,
-    )!;
-    actor.wordsTyped++;
+    submitter.wordsTyped++;
 
     const target = this.selectAttackTarget(session, playerId);
     const damage = target ? this.damageForKeystrokes(word.keystrokes) : 0;
@@ -536,26 +687,19 @@ export class AcidRainService implements OnModuleInit {
 
   // ─── 재접속 처리 ──────────────────────────────────────────────────────────
 
+  // 연결이 끊긴 참가자는 소켓이 없으니 애초에 단어를 제출(공격)할 수 없고, 반대로 다른
+  // 생존자들의 타겟 선택/스플래시 데미지는 연결 여부와 무관하게 살아있는 참가자 전원을
+  // 대상으로 하므로 계속 맞을 수는 있다 — 이미 자연스러운 페널티가 있다. 언제든 다시
+  // join_room으로 재접속할 수 있고, 매치 자체도 MATCH_DURATION_MS(180초) 하드 타임아웃이
+  // 있어 무한정 멈춰있을 수 없다. 그래서 강제 탈락/그레이스 타이머는 두지 않는다(#161) —
+  // 화장실을 다녀오거나 새로고침이 잠깐 오래 걸리는 정상적인 경우까지 게임에서 쫓아내는
+  // 부작용만 있었다. (명시적 "나가기"는 다르다 — AcidRainGateway.handleLeaveRoom은 계속
+  // leaveMatch로 즉시 탈락 처리한다.)
   handleDisconnect(roomId: string, userId: string, server: Server): void {
     const session = this.sessions.get(roomId);
     if (!session || session.status === 'FINISHED') return;
 
-    server.to(`game:${roomId}`).emit('opponent_disconnected', {
-      userId,
-      graceMs: GRACE_PERIOD_MS,
-    });
-
-    const timer = setTimeout(() => {
-      this.graceTimers.delete(roomId);
-      const current = this.sessions.get(roomId);
-      if (!current || current.status === 'FINISHED') return;
-      void this.applyForfeitAndMaybeEnd(current, userId, server).catch(() => {
-        // endMatch already logs and schedules its own retry; timer callers
-        // intentionally swallow (same pattern as safeEndMatch).
-      });
-    }, GRACE_PERIOD_MS);
-
-    this.graceTimers.set(roomId, timer);
+    server.to(`game:${roomId}`).emit('opponent_disconnected', { userId });
   }
 
   /**
@@ -610,13 +754,6 @@ export class AcidRainService implements OnModuleInit {
   ): void {
     const session = this.sessions.get(roomId);
     if (!session) return;
-
-    // 유예 타이머 취소
-    const timer = this.graceTimers.get(roomId);
-    if (timer) {
-      clearTimeout(timer);
-      this.graceTimers.delete(roomId);
-    }
 
     server.to(`game:${roomId}`).emit('opponent_reconnected', { userId });
 
@@ -754,6 +891,7 @@ export class AcidRainService implements OnModuleInit {
       this.matchFinalizations.set(roomId, finalization);
     }
 
+    this.aiScheduler.invalidate(roomId);
     session.status = 'FINISHED';
 
     // 루프 정리
@@ -826,6 +964,7 @@ export class AcidRainService implements OnModuleInit {
     }
 
     this.sessions.delete(roomId);
+    this.aiScheduler.destroy(roomId);
     this.deleteProcessedAttemptsForRoom(roomId);
     activeGames.set(this.sessions.size);
     this.matchFinalizations.delete(roomId);
@@ -1006,6 +1145,13 @@ export class AcidRainService implements OnModuleInit {
       this.logger.error('Failed to save MatchHistory', err);
       throw err;
     }
+
+    const resultStatus = snapshot.winnerId ? 'FINISHED' : 'ABORTED';
+    await this.performanceService.saveParticipantPerformances(
+      session,
+      session.roomId,
+      resultStatus,
+    );
   }
 
   private assertStatsUpdated(
@@ -1163,8 +1309,31 @@ export class AcidRainService implements OnModuleInit {
     if (!word || session.resolvedWords.has(wordId)) return false;
     session.activeWords.delete(wordId);
     session.occupiedLanes.delete(word.lane);
-    session.resolvedWords.set(wordId, { state, playerId, attemptId });
+    session.resolvedWords.set(wordId, {
+      state,
+      playerId,
+      attemptId,
+      spawnedAt: word.spawnedAt,
+    });
+    session.stateVersion += 1;
     return true;
+  }
+
+  private notifyAiStateChanged(
+    session: AcidRainSession,
+    _server: Server,
+    event: AiStateChange['event'],
+  ): void {
+    if (session.mode !== 'AI_PRACTICE' || session.status !== 'IN_PROGRESS') {
+      return;
+    }
+    this.aiScheduler.onStateChange({
+      roomId: session.roomId,
+      stateVersion: session.stateVersion,
+      activeWords: toAiRuntimeWords(session.activeWords),
+      status: session.status,
+      event,
+    });
   }
 
   private aliveParticipants(session: AcidRainSession): ParticipantRuntime[] {
@@ -1240,6 +1409,7 @@ export class AcidRainService implements OnModuleInit {
     wordState?: WordResolutionState,
   ): SubmitRejectedReason {
     if (reason === 'INCORRECT_TEXT') return 'WRONG_TEXT';
+    if (reason === 'PLAYER_ELIMINATED') return 'PLAYER_ELIMINATED';
     if (reason === 'WORD_ALREADY_RESOLVED' && wordState === 'CLEARED') {
       return 'ALREADY_CLEARED';
     }
@@ -1247,6 +1417,8 @@ export class AcidRainService implements OnModuleInit {
   }
 
   private determineWinner(session: AcidRainSession): string | null {
+    // aliveParticipants 기준으로 통일한다 — host/guest HP만 비교하면 3~4인 매치에서
+    // 마지막 생존자가 3번째/4번째 참가자일 때 틀린 승자를 반환했다.
     const alive = this.aliveParticipants(session);
     return alive.length === 1 ? alive[0].participantId : null;
   }
