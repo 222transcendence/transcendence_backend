@@ -89,6 +89,7 @@ export interface AcidRainSession {
   nextEliminationOrder: number;
   mode: 'PVP' | 'AI_PRACTICE';
   status: 'COUNTDOWN' | 'IN_PROGRESS' | 'FINISHED';
+  stateVersion: number;
 }
 
 export interface ActiveWord extends Omit<WordSpawnPayload, 'landAt'> {
