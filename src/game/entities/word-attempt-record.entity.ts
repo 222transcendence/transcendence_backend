@@ -53,7 +53,7 @@ export class WordAttemptRecord {
   @Column({ type: 'timestamptz' })
   resolvedAt: Date;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   submittedText: string | null;
 
   @Column('int', { default: 0 })
