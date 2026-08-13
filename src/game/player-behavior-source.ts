@@ -105,11 +105,14 @@ function buildBehaviorMetrics(attempts: WordAttemptRecord[]) {
     (sum, attempt) => sum + Math.max(0, attempt.typoCount),
     0,
   );
+  // A measured zero is different from an unobserved metric. Keep zero when
+  // attempts contain keystroke observations so the profile can distinguish
+  // an accurate player from a dataset with no typing data.
   const typoProbability =
-    totalKeystrokes > 0 && typoCount > 0 ? typoCount / totalKeystrokes : null;
+    totalKeystrokes > 0 ? typoCount / totalKeystrokes : null;
   const abandoned = started.filter((attempt) => attempt.result === 'GIVE_UP');
   const abandonProbability =
-    abandoned.length > 0 ? abandoned.length / started.length : null;
+    started.length > 0 ? abandoned.length / started.length : null;
   const wordLengthPerformance: WordLengthPerformance = {
     short: unavailableObservation(),
     medium: unavailableObservation(),
@@ -122,7 +125,7 @@ function buildBehaviorMetrics(attempts: WordAttemptRecord[]) {
     abandonProbability,
     wordLengthPerformance,
     observationCounts: {
-      typo: typoCount > 0 ? totalKeystrokes : 0,
+      typo: totalKeystrokes,
       correction: 0,
       abandon: abandoned.length,
       wordLength: 0,

@@ -140,7 +140,7 @@ describe('TypeOrmPlayerBehaviorSource', () => {
     expect(result.wordLengthPerformance.long.value).toBeNull();
   });
 
-  it('does not invent typo probability when the stored typo event count is zero', async () => {
+  it('preserves an observed zero typo probability', async () => {
     const performanceSource = new TypeOrmPlayerPerformanceSource({
       createQueryBuilder: () => queryBuilder([performance()]),
     } as never);
@@ -149,8 +149,8 @@ describe('TypeOrmPlayerBehaviorSource', () => {
     } as never);
 
     await expect(source.getRecentBehavior('user-a')).resolves.toMatchObject({
-      typoProbability: null,
-      observationCounts: { typo: 0, correction: 0 },
+      typoProbability: 0,
+      observationCounts: { typo: 4, correction: 0 },
     });
   });
 });

@@ -41,14 +41,14 @@ describe('estimatePopulationDefault', () => {
     expect(estimate.exclusionReasons).toContain('NO_EXPLICIT_CONSENT');
   });
 
-  it('does not publish a runtime candidate for the audited one-player dataset shape', () => {
+  it('publishes a developer baseline from one balanced player', () => {
     const estimate = estimatePopulationDefault([
       sample('only-player', 'm1', '2026-01-01'),
       sample('only-player', 'm2', '2026-01-02'),
       sample('only-player', 'm3', '2026-01-03'),
     ]);
 
-    expect(estimate.eligibleForRuntime).toBe(false);
+    expect(estimate.eligibleForRuntime).toBe(true);
     expect(estimate.profile).not.toBeNull();
     expect(estimate.distinctPlayers).toBe(1);
   });
@@ -89,7 +89,7 @@ describe('estimatePopulationDefault', () => {
     expect(estimate.usedMatches).toBe(10);
     expect(estimate.exclusionCounts.PLAYER_MATCH_CAP).toBe(1);
     expect(estimate.exclusionCounts.OUT_OF_RANGE).toBe(1);
-    expect(estimate.gateFailureReasons).toEqual(['INSUFFICIENT_PLAYERS']);
+    expect(estimate.gateFailureReasons).toEqual([]);
   });
 
   it('keeps slow but positive WPM samples while rejecting only invalid dataset bounds', () => {

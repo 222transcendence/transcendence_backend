@@ -2,9 +2,12 @@ import { DEFAULT_PLAYER_SKILL } from './player-model';
 
 /** Versioned, offline-generated population-default policy for #167. */
 export const POPULATION_DEFAULT_CONFIG = {
-  version: 'population-default-v1',
+  version: 'population-default-developer-baseline-v1',
   allowlistEnvironmentVariable: 'AI_POPULATION_DEFAULT_USER_ALLOWLIST',
-  minimumDistinctPlayers: 3,
+  // This project intentionally uses the developer's profile as the common
+  // evaluation baseline. It is not a statistically representative population
+  // model; use a larger gate when publishing a general-purpose default.
+  minimumDistinctPlayers: 1,
   minimumMatchesPerPlayer: 3,
   maximumMatchesPerPlayer: 10,
   requireExplicitConsent: true,
