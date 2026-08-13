@@ -263,6 +263,13 @@ export interface WordMissedEventPayload {
   hp: HpByParticipantId;
 }
 
+/** 탈락 이벤트 (N인 배틀로얄) — frontend AcidRainServerEvents.player_eliminated와 계약 일치 */
+export interface PlayerEliminatedEventPayload {
+  userId: string;
+  rank: number;
+  finalHp: number;
+}
+
 export interface SubmitRejectedEventPayload {
   wordId: string;
   reason: SubmitRejectedReason;
@@ -316,6 +323,7 @@ export interface JudgeWordSubmitAccepted {
   loserId: string | null;
   endReason: Extract<MatchEndReason, 'KO'> | null;
   wordCleared: WordClearedEventPayload;
+  eliminatedParticipantIds: string[];
 }
 
 export interface JudgeWordSubmitRejected {
