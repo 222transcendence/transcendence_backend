@@ -11,6 +11,7 @@ import { GameController } from './game.controller';
 import { GameService } from './game.service';
 import { AiPracticeService } from './ai-practice.service';
 import { PerformanceService } from './acid-rain/performance.service';
+import { TypeOrmPlayerPerformanceSource } from './player-performance-source';
 
 @Module({
   imports: [
@@ -25,7 +26,18 @@ import { PerformanceService } from './acid-rain/performance.service';
     RedisModule,
   ],
   controllers: [GameController],
-  providers: [GameService, AiPracticeService, PerformanceService],
-  exports: [TypeOrmModule, GameService, AiPracticeService, PerformanceService],
+  providers: [
+    GameService,
+    AiPracticeService,
+    PerformanceService,
+    TypeOrmPlayerPerformanceSource,
+  ],
+  exports: [
+    TypeOrmModule,
+    GameService,
+    AiPracticeService,
+    PerformanceService,
+    TypeOrmPlayerPerformanceSource,
+  ],
 })
 export class GameModule {}

@@ -13,6 +13,7 @@ import {
   DefaultAiExecutionProfileFactory,
   DefaultAiProfileProvider,
 } from './acid-rain/ai/ai-execution-profile';
+import { PlayerPerformanceProfileProvider } from './acid-rain/ai/player-performance-profile-provider';
 import {
   AI_CLOCK,
   AI_PROFILE_FACTORY,
@@ -40,7 +41,11 @@ import {
     AiScheduler,
     DefaultAiProfileProvider,
     DefaultAiExecutionProfileFactory,
-    { provide: AI_PROFILE_PROVIDER, useExisting: DefaultAiProfileProvider },
+    PlayerPerformanceProfileProvider,
+    {
+      provide: AI_PROFILE_PROVIDER,
+      useExisting: PlayerPerformanceProfileProvider,
+    },
     {
       provide: AI_PROFILE_FACTORY,
       useExisting: DefaultAiExecutionProfileFactory,

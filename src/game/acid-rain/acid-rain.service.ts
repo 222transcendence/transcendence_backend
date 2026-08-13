@@ -176,6 +176,20 @@ export class AcidRainService implements OnModuleInit {
       wordsTyped: 0,
       status: 'ACTIVE' as const,
     }));
+    const aiParticipant = participants.find(
+      (participant) => participant.type === 'AI',
+    );
+    const modelPlayer = participants.find(
+      (participant) => participant.type === 'HUMAN' && participant.userId,
+    );
+    if (mode === 'AI_PRACTICE') {
+      if (!aiParticipant?.aiDifficulty) {
+        throw new Error('AI practice session is missing AI difficulty');
+      }
+      if (!modelPlayer?.userId) {
+        throw new Error('AI practice session is missing human user id');
+      }
+    }
     const hpByParticipantId = Object.fromEntries(
       participants.map((participant) => [
         participant.participantId,
@@ -202,14 +216,11 @@ export class AcidRainService implements OnModuleInit {
     };
     this.sessions.set(roomId, session);
     if (mode === 'AI_PRACTICE') {
-      const ai = participants.find((participant) => participant.type === 'AI');
-      if (!ai?.aiDifficulty) {
-        throw new Error('AI practice session is missing AI difficulty');
-      }
       this.aiScheduler.registerRoom({
         roomId,
-        aiParticipantId: ai.participantId,
-        difficulty: ai.aiDifficulty,
+        aiParticipantId: aiParticipant!.participantId,
+        modelPlayerId: modelPlayer!.userId!,
+        difficulty: aiParticipant!.aiDifficulty!,
         submitWord: (input) => this.submitWord(input, server),
         emitTypingProgress: (participantId, partialText) => {
           server.to(`game:${roomId}`).emit('opponent_typing', {

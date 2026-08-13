@@ -72,6 +72,7 @@ export interface AiTypingProgressCallback {
 export interface AiSchedulerRegistration {
   roomId: string;
   aiParticipantId: string;
+  modelPlayerId: string;
   difficulty: AiDifficulty;
   submitWord: AiSubmissionCallback;
   emitTypingProgress: AiTypingProgressCallback;

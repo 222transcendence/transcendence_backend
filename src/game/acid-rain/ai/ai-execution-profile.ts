@@ -20,6 +20,12 @@ export interface AiProfileProvider {
     roomId: string;
     aiParticipantId: string;
   }): PlayerSkillProfile;
+  loadSkillProfile?(context: {
+    roomId: string;
+    aiParticipantId: string;
+    modelPlayerId: string;
+    difficulty: AiDifficulty;
+  }): Promise<PlayerSkillProfile>;
 }
 
 export interface AiExecutionProfileFactory {
