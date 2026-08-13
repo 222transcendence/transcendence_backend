@@ -2304,18 +2304,22 @@ describe('AcidRainService', () => {
     it('provides an outbound opponent_typing callback without exposing wordId', async () => {
       let registration:
         | {
-            emitTypingProgress: (
-              participantId: string,
-              partialText: string,
-            ) => void;
+            emitTypingProgress: (payload: {
+              participantId: string;
+              partialText: string;
+              wordId?: string;
+              phase?: string;
+            }) => void;
           }
         | undefined;
       mockAiScheduler.registerRoom.mockImplementation((value: unknown) => {
         registration = value as {
-          emitTypingProgress: (
-            participantId: string,
-            partialText: string,
-          ) => void;
+          emitTypingProgress: (payload: {
+            participantId: string;
+            partialText: string;
+            wordId?: string;
+            phase?: string;
+          }) => void;
         };
       });
       await startParticipants(
@@ -2336,13 +2340,23 @@ describe('AcidRainService', () => {
         'AI_PRACTICE',
       );
 
-      registration!.emitTypingProgress('ai:room-1', '가');
+      registration!.emitTypingProgress({
+        participantId: 'ai:room-1',
+        partialText: '가',
+        wordId: 'private-word',
+        phase: 'TYPING',
+      });
 
       expect(emitSpy).toHaveBeenCalledWith('opponent_typing', {
         participantId: 'ai:room-1',
         partialText: '가',
+        wordId: 'private-word',
+        phase: 'TYPING',
       });
-      expect(emitSpy.mock.calls.at(-1)?.[1]).not.toHaveProperty('wordId');
+      expect(emitSpy.mock.calls.at(-1)?.[1]).toHaveProperty(
+        'wordId',
+        'private-word',
+      );
     });
 
     it('registers and cleans the AI scheduler through finalizeMatch', async () => {

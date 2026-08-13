@@ -1,6 +1,6 @@
 import { Inject, Injectable, Optional } from '@nestjs/common';
 import type { AiExecutionProfile } from '../../player-model';
-import { countKeystrokes } from '../keystroke-count';
+import { createHangulTypingSnapshots } from './hangul-ime';
 import type { UtilityAction, CurrentTarget } from './state-evaluator';
 import type {
   AiExecutionTask,
@@ -58,6 +58,8 @@ export class AiExecutor {
     const reactionEndsAtMs = selectedAtMs + reactionDelayMs;
     const typingStartedAtMs = reactionEndsAtMs;
     const timeline: AiTypingSegment[] = [];
+    const normalizedText = word.text.normalize('NFC');
+    const typingSnapshots = createHangulTypingSnapshots(normalizedText);
     let cursor = typingStartedAtMs;
     const typoChance = typoProbability(
       profile.execution.accuracy,
@@ -93,7 +95,7 @@ export class AiExecutor {
     return {
       roomId,
       wordId: word.wordId,
-      text: word.text,
+      text: normalizedText,
       selectedAtMs,
       reactionEndsAtMs,
       typingStartedAtMs,
@@ -107,34 +109,48 @@ export class AiExecutor {
       progressWasVisible: false,
       progressCleared: false,
       nextEventAtMs: null,
+      typingSnapshots,
     };
   }
 
   partialText(task: AiExecutionTask, nowMs: number): string {
     if (nowMs < task.reactionEndsAtMs) return '';
     const completed = this.completedKeystrokes(task, nowMs);
-    if (completed >= task.totalKeystrokes) return task.text;
+    return task.typingSnapshots[completed - 1] ?? '';
+  }
 
-    let consumed = 0;
-    let partial = '';
-    for (const character of Array.from(task.text)) {
-      const characterKeystrokes = this.characterKeystrokes(character);
-      if (consumed + characterKeystrokes > completed) break;
-      partial += character;
-      consumed += characterKeystrokes;
-    }
-    return partial;
+  completedKeystrokesAt(task: AiExecutionTask, nowMs: number): number {
+    return this.completedKeystrokes(task, nowMs);
+  }
+
+  typingSnapshot(task: AiExecutionTask, completedKeystrokes: number): string {
+    if (completedKeystrokes >= task.totalKeystrokes) return task.text;
+    return task.typingSnapshots[completedKeystrokes - 1] ?? '';
+  }
+
+  isCorrecting(task: AiExecutionTask, nowMs: number): boolean {
+    return task.timeline.some(
+      (segment) =>
+        segment.kind === 'CORRECTION' &&
+        segment.startMs <= nowMs &&
+        nowMs < segment.completionMs,
+    );
   }
 
   nextProgressAtMs(task: AiExecutionTask, nowMs: number): number | undefined {
     return task.timeline
       .filter(
         (segment) =>
-          segment.kind === 'KEYSTROKE' && segment.completionMs > nowMs,
+          (segment.kind === 'KEYSTROKE' && segment.completionMs > nowMs) ||
+          (segment.kind === 'CORRECTION' && segment.startMs > nowMs),
       )
-      .reduce<
-        number | undefined
-      >((next, segment) => (next === undefined ? segment.completionMs : Math.min(next, segment.completionMs)), undefined);
+      .reduce<number | undefined>((next, segment) => {
+        const boundary =
+          segment.kind === 'CORRECTION'
+            ? segment.startMs
+            : segment.completionMs;
+        return next === undefined ? boundary : Math.min(next, boundary);
+      }, undefined);
   }
 
   currentTarget(
@@ -176,14 +192,6 @@ export class AiExecutor {
       }
     }
     return Math.min(task.totalKeystrokes, Math.max(0, completed.size));
-  }
-
-  private characterKeystrokes(character: string): number {
-    try {
-      return countKeystrokes(character);
-    } catch {
-      return 1;
-    }
   }
 
   actionRequiresTask(action: UtilityAction): boolean {

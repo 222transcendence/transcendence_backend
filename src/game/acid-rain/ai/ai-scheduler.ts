@@ -1,6 +1,9 @@
 import { Inject, Injectable, Logger, Optional } from '@nestjs/common';
 import { randomUUID } from 'crypto';
-import type { JudgeWordSubmitInput } from '../acid-rain.interface';
+import type {
+  JudgeWordSubmitInput,
+  OpponentTypingEventPayload,
+} from '../acid-rain.interface';
 import { evaluateUtility } from './state-evaluator';
 import {
   DefaultAiExecutionProfileFactory,
@@ -42,6 +45,7 @@ interface SchedulerState extends AiSchedulerRegistration {
   profileSnapshot: PlayerSkillProfile;
   profileLoadStarted: boolean;
   registrationToken: string;
+  typingStateVersion: number;
 }
 
 const systemClock: Clock = { now: () => Date.now() };
@@ -89,6 +93,7 @@ export class AiScheduler {
       profileLoadStarted:
         typeof this.profileProvider.loadSkillProfile === 'function',
       registrationToken: randomUUID(),
+      typingStateVersion: 0,
     };
     this.rooms.set(registration.roomId, state);
     if (state.profileLoadStarted) void this.preloadProfile(state);
@@ -266,6 +271,7 @@ export class AiScheduler {
       token,
     );
     state.task = task;
+    this.emitPhase(state, task, 'REACTION', 0, '');
     this.scheduleNextTaskEvent(state, task, generation, token);
   }
 
@@ -314,10 +320,13 @@ export class AiScheduler {
     task.nextEventAtMs = null;
     const completionMs = this.executor.completionMs(task);
     if (eventAtMs < completionMs) {
-      this.emitProgress(
+      const completed = this.executor.completedKeystrokesAt(task, eventAtMs);
+      this.emitPhase(
         state,
         task,
-        this.executor.partialText(task, eventAtMs),
+        this.executor.isCorrecting(task, eventAtMs) ? 'CORRECTING' : 'TYPING',
+        completed,
+        this.executor.typingSnapshot(task, completed),
       );
       if (this.isCurrentTask(state, task, generation, token)) {
         this.scheduleNextTaskEvent(state, task, generation, token, eventAtMs);
@@ -325,7 +334,7 @@ export class AiScheduler {
       return;
     }
     if (!this.lastActiveWord(state, wordId)) return;
-    this.emitProgress(state, task, task.text);
+    this.emitPhase(state, task, 'TYPING', task.totalKeystrokes, task.text);
     if (!this.isCurrentTask(state, task, generation, token)) return;
     const input: JudgeWordSubmitInput = {
       roomId,
@@ -366,23 +375,46 @@ export class AiScheduler {
     state.task = undefined;
   }
 
-  private emitProgress(
+  private emitPhase(
     state: SchedulerState,
     task: AiExecutionTask,
+    phase: OpponentTypingEventPayload['phase'],
+    completedKeystrokes: number,
     partialText: string,
   ): void {
-    if (!partialText || partialText === task.lastEmittedPartialText) return;
     if (!this.isCurrentTask(state, task, task.generation, task.token)) return;
+    if (
+      partialText === task.lastEmittedPartialText &&
+      phase !== 'CORRECTING' &&
+      task.progressWasVisible
+    )
+      return;
     task.lastEmittedPartialText = partialText;
     task.progressWasVisible = true;
-    state.emitTypingProgress(state.aiParticipantId, partialText);
+    state.emitTypingProgress({
+      participantId: state.aiParticipantId,
+      partialText,
+      wordId: task.wordId,
+      completedKeystrokes,
+      totalKeystrokes: task.totalKeystrokes,
+      phase,
+      stateVersion: ++state.typingStateVersion,
+    });
   }
 
   private clearProgress(state: SchedulerState, task: AiExecutionTask): void {
     if (!task.progressWasVisible || task.progressCleared) return;
     task.progressCleared = true;
     if (this.isCurrentTask(state, task, task.generation, task.token)) {
-      state.emitTypingProgress(state.aiParticipantId, '');
+      state.emitTypingProgress({
+        participantId: state.aiParticipantId,
+        partialText: '',
+        wordId: task.wordId,
+        completedKeystrokes: task.totalKeystrokes,
+        totalKeystrokes: task.totalKeystrokes,
+        phase: 'IDLE',
+        stateVersion: ++state.typingStateVersion,
+      });
     }
   }
 

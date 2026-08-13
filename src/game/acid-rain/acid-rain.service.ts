@@ -220,11 +220,8 @@ export class AcidRainService implements OnModuleInit {
         modelPlayerId: modelPlayer!.userId!,
         difficulty: aiParticipant!.aiDifficulty!,
         submitWord: (input) => this.submitWord(input, server),
-        emitTypingProgress: (participantId, partialText) => {
-          server.to(`game:${roomId}`).emit('opponent_typing', {
-            participantId,
-            partialText,
-          });
+        emitTypingProgress: (payload) => {
+          server.to(`game:${roomId}`).emit('opponent_typing', payload);
         },
       });
     }

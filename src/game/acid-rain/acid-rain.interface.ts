@@ -120,7 +120,14 @@ export interface WordTypingState {
 export interface OpponentTypingEventPayload {
   participantId: string;
   partialText: string;
+  wordId?: string;
+  completedKeystrokes?: number;
+  totalKeystrokes?: number;
+  phase?: OpponentTypingPhase;
+  stateVersion?: number;
 }
+
+export type OpponentTypingPhase = 'IDLE' | 'REACTION' | 'TYPING' | 'CORRECTING';
 
 export interface JoinRoomPayload {
   roomId: string;

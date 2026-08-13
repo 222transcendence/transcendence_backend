@@ -2,6 +2,7 @@ import type {
   AiDifficulty,
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
+  OpponentTypingEventPayload,
 } from '../acid-rain.interface';
 
 export const AI_CLOCK = Symbol('AI_CLOCK');
@@ -59,6 +60,7 @@ export interface AiExecutionTask {
   progressWasVisible: boolean;
   progressCleared: boolean;
   nextEventAtMs: number | null;
+  typingSnapshots: readonly string[];
 }
 
 export interface AiSubmissionCallback {
@@ -66,7 +68,7 @@ export interface AiSubmissionCallback {
 }
 
 export interface AiTypingProgressCallback {
-  (participantId: string, partialText: string): void;
+  (payload: OpponentTypingEventPayload): void;
 }
 
 export interface AiSchedulerRegistration {

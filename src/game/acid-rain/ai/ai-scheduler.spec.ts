@@ -50,7 +50,7 @@ function setup() {
   const random: RandomSource = { next: () => 1 };
   const executor = new AiExecutor(clock, random);
   const submitted: JudgeWordSubmitInput[] = [];
-  const progress: Array<{ participantId: string; partialText: string }> = [];
+  const progress: Array<Record<string, unknown>> = [];
   const scheduler = new AiScheduler(
     executor,
     undefined,
@@ -67,8 +67,8 @@ function setup() {
       submitted.push(input);
       return Promise.resolve(accepted(input));
     },
-    emitTypingProgress: (participantId, partialText) => {
-      progress.push({ participantId, partialText });
+    emitTypingProgress: (payload) => {
+      progress.push(payload);
     },
   });
   return {
@@ -93,7 +93,7 @@ const word = {
 };
 
 describe('AiScheduler lifecycle and race guards', () => {
-  it('does not emit progress during reaction and suppresses duplicate partial text', async () => {
+  it('emits reaction and typing phases with monotonic progress', async () => {
     const test = setup();
     test.scheduler.onStateChange({
       roomId: 'room',
@@ -102,14 +102,21 @@ describe('AiScheduler lifecycle and race guards', () => {
       status: 'IN_PROGRESS',
       event: 'SPAWN',
     });
-    expect(test.progress).toHaveLength(0);
+    expect(test.progress[0]).toMatchObject({
+      phase: 'REACTION',
+      partialText: '',
+    });
     test.runTimers();
     await Promise.resolve();
     expect(test.progress.map((event) => event.partialText)).toEqual([
+      '',
       'a',
       'ab',
       'abc',
       '',
+    ]);
+    expect(test.progress.map((event) => event.stateVersion)).toEqual([
+      1, 2, 3, 4, 5,
     ]);
   });
 
@@ -126,7 +133,10 @@ describe('AiScheduler lifecycle and race guards', () => {
     test.runTimers();
     await Promise.resolve();
     expect(test.progress.map((event) => event.partialText)).toEqual([
+      '',
+      'ㄱ',
       '가',
+      '간',
       '가나',
       '',
     ]);
@@ -151,9 +161,9 @@ describe('AiScheduler lifecycle and race guards', () => {
       status: 'IN_PROGRESS',
       event: 'SPAWN',
     });
-    expect(test.progress.slice(beforeSwitch)).toEqual([
-      { participantId: 'ai:room', partialText: '' },
-    ]);
+    expect(
+      test.progress.slice(beforeSwitch).map((event) => event.phase),
+    ).toEqual(['IDLE', 'REACTION']);
     expect(test.scheduler.getTask('room')?.wordId).toBe('w2');
   });
 
@@ -177,7 +187,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     });
     expect(test.scheduler.getTask('room')).toBe(task);
     expect(test.scheduler.getTask('room')?.timer).toBe(timer);
-    expect(test.progress).toHaveLength(0);
+    expect(test.progress).toHaveLength(1);
   });
 
   it('clears the current target exactly once when it disappears', () => {
@@ -198,9 +208,9 @@ describe('AiScheduler lifecycle and race guards', () => {
       status: 'IN_PROGRESS',
       event: 'CLEAR',
     });
-    expect(test.progress.slice(beforeClear)).toEqual([
-      { participantId: 'ai:room', partialText: '' },
-    ]);
+    expect(
+      test.progress.slice(beforeClear).map((event) => event.phase),
+    ).toEqual(['IDLE']);
     expect(test.scheduler.getTask('room')).toBeUndefined();
   });
 
@@ -226,8 +236,8 @@ describe('AiScheduler lifecycle and race guards', () => {
       aiParticipantId: 'ai:room',
       difficulty: 'NORMAL',
       submitWord: submit,
-      emitTypingProgress: (participantId, partialText) => {
-        test.progress.push({ participantId, partialText });
+      emitTypingProgress: (payload) => {
+        test.progress.push(payload as Record<string, unknown>);
       },
     });
     test.scheduler.onStateChange({

@@ -37,7 +37,7 @@ describe('AiExecutor timeline progress', () => {
     expect(executor.partialText(task, keys[2].completionMs)).toBe('abc');
   });
 
-  it('only changes Korean partial text at complete syllable boundaries', () => {
+  it('exposes one Korean IME snapshot per physical keystroke', () => {
     const clock: Clock = { now: () => 0 };
     const random: RandomSource = { next: () => 1 };
     const executor = new AiExecutor(clock, random);
@@ -57,10 +57,9 @@ describe('AiExecutor timeline progress', () => {
     const keys = task.timeline.filter(
       (segment) => segment.kind === 'KEYSTROKE',
     );
-    expect(executor.partialText(task, keys[0].completionMs)).toBe('');
-    expect(executor.partialText(task, keys[1].completionMs)).toBe('가');
-    expect(executor.partialText(task, keys[2].completionMs)).toBe('가');
-    expect(executor.partialText(task, keys[3].completionMs)).toBe('가나');
+    expect(
+      keys.map((key) => executor.partialText(task, key.completionMs)),
+    ).toEqual(['ㄱ', '가', '간', '가나']);
   });
 
   it('reports NOT_STARTED during reaction delay', () => {
