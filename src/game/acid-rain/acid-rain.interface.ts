@@ -23,6 +23,7 @@ export interface ParticipantPublic {
   nickname: string;
   type: ParticipantType;
   aiDifficulty?: AiDifficulty;
+  avatar?: string;
 }
 
 export interface ParticipantState extends ParticipantPublic {

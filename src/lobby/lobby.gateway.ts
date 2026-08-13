@@ -382,6 +382,7 @@ export class LobbyGateway implements OnModuleInit {
           const result = await this.aiPracticeService.createAiPractice({
             ownerUserId: client.userId,
             ownerNickname: client.nickname,
+            ownerAvatar: client.avatar,
             requestId,
             difficulty,
           });
