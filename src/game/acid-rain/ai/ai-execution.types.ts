@@ -3,6 +3,7 @@ import type {
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
   OpponentTypingEventPayload,
+  AiMonitorSnapshotPatch,
 } from '../acid-rain.interface';
 
 export const AI_CLOCK = Symbol('AI_CLOCK');
@@ -71,6 +72,10 @@ export interface AiTypingProgressCallback {
   (payload: OpponentTypingEventPayload): void;
 }
 
+export interface AiMonitorSnapshotCallback {
+  (payload: AiMonitorSnapshotPatch): void;
+}
+
 export interface AiSchedulerRegistration {
   roomId: string;
   aiParticipantId: string;
@@ -78,6 +83,7 @@ export interface AiSchedulerRegistration {
   difficulty: AiDifficulty;
   submitWord: AiSubmissionCallback;
   emitTypingProgress: AiTypingProgressCallback;
+  emitMonitorSnapshot?: AiMonitorSnapshotCallback;
 }
 
 export interface AiStateChange {

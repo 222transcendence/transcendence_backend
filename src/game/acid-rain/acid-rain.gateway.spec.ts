@@ -293,7 +293,10 @@ describe('AcidRainGateway leave_room', () => {
 
 describe('AcidRainGateway spectate_room (#70)', () => {
   let gateway: AcidRainGateway;
-  let acidRainService: { getSpectatorSnapshot: jest.Mock };
+  let acidRainService: {
+    getSpectatorSnapshot: jest.Mock;
+    getLatestAiMonitorSnapshot: jest.Mock;
+  };
   let redisService: { get: jest.Mock };
   let aiPracticeService: { getAiPracticeSession: jest.Mock };
   let chatGateway: { sendSystemMessage: jest.Mock };
@@ -327,7 +330,10 @@ describe('AcidRainGateway spectate_room (#70)', () => {
   };
 
   beforeEach(() => {
-    acidRainService = { getSpectatorSnapshot: jest.fn() };
+    acidRainService = {
+      getSpectatorSnapshot: jest.fn(),
+      getLatestAiMonitorSnapshot: jest.fn(),
+    };
     redisService = { get: jest.fn() };
     aiPracticeService = { getAiPracticeSession: jest.fn() };
     chatGateway = { sendSystemMessage: jest.fn().mockResolvedValue(undefined) };
@@ -354,12 +360,49 @@ describe('AcidRainGateway spectate_room (#70)', () => {
 
   it('joins the socket room and sends a state_sync snapshot for an in-progress match', async () => {
     acidRainService.getSpectatorSnapshot.mockReturnValue(snapshot);
+    acidRainService.getLatestAiMonitorSnapshot.mockReturnValue({
+      roomId: 'room-1',
+      participantId: 'ai:room-1',
+      stateVersion: 7,
+      timestamp: '2026-08-12T00:00:12.000Z',
+      kind: 'FULL',
+      currentDecision: {
+        action: 'SELECT',
+        phase: 'REACTION',
+        targetWordId: 'word-1',
+        previousTargetWordId: null,
+      },
+      profile: {
+        wpm: 45,
+        accuracy: 0.92,
+        reactionTimeMs: 650,
+        sampleCount: 0,
+        confidence: 0,
+        source: null,
+      },
+      executionProfile: {
+        difficulty: 'NORMAL',
+        typingWpm: 45,
+        accuracy: 0.92,
+        reactionDelayMs: 650,
+        typoProbability: 0.08,
+        correctionDelayMs: 150,
+        abandonProbability: 0.06,
+      },
+      candidates: [],
+      completedKeystrokes: 0,
+      totalKeystrokes: 3,
+    });
 
     await gateway.handleSpectateRoom(client, { roomId: 'room-1' });
 
     expect(acidRainService.getSpectatorSnapshot).toHaveBeenCalledWith('room-1');
     expect(clientJoin).toHaveBeenCalledWith('game:room-1');
     expect(clientEmit).toHaveBeenCalledWith('state_sync', snapshot);
+    expect(clientEmit).toHaveBeenCalledWith(
+      'ai_monitor_snapshot',
+      expect.objectContaining({ roomId: 'room-1', kind: 'FULL' }),
+    );
     expect(
       (client.data as { spectatingRoomId?: string }).spectatingRoomId,
     ).toBe('room-1');

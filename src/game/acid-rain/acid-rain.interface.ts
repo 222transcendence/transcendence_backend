@@ -129,6 +129,75 @@ export interface OpponentTypingEventPayload {
 
 export type OpponentTypingPhase = 'IDLE' | 'REACTION' | 'TYPING' | 'CORRECTING';
 
+export type AiMonitorSnapshotKind = 'FULL' | 'DECISION' | 'PHASE' | 'TERMINAL';
+
+export type AiMonitorDecisionAction =
+  | 'KEEP'
+  | 'SWITCH'
+  | 'ABANDON'
+  | 'SELECT'
+  | 'NO_TARGET';
+
+export interface AiMonitorDecision {
+  action: AiMonitorDecisionAction;
+  phase: OpponentTypingPhase;
+  targetWordId: string | null;
+  previousTargetWordId: string | null;
+}
+
+export interface AiMonitorPlayerProfile {
+  wpm: number;
+  accuracy: number;
+  reactionTimeMs: number;
+  sampleCount: number;
+  confidence: number;
+  source: null;
+}
+
+export interface AiMonitorExecutionProfile {
+  difficulty: AiDifficulty;
+  typingWpm: number;
+  accuracy: number;
+  reactionDelayMs: number;
+  typoProbability: number;
+  correctionDelayMs: number;
+  abandonProbability: number;
+}
+
+export interface AiMonitorCandidate {
+  wordId: string;
+  utility: number | null;
+  successProbability: number | null;
+  urgency: number | null;
+  completionMs: number | null;
+  opportunityCost: number | null;
+  remainingMs: number;
+  eligible: boolean;
+  selected: boolean;
+}
+
+export interface AiMonitorSnapshot {
+  roomId: string;
+  participantId: string;
+  stateVersion: number;
+  timestamp: string;
+  kind: AiMonitorSnapshotKind;
+  currentDecision: AiMonitorDecision;
+  profile: AiMonitorPlayerProfile;
+  executionProfile: AiMonitorExecutionProfile;
+  candidates: AiMonitorCandidate[];
+  completedKeystrokes: number;
+  totalKeystrokes: number;
+}
+
+export type AiMonitorSnapshotPatch = Partial<AiMonitorSnapshot> & {
+  roomId: string;
+  participantId: string;
+  stateVersion: number;
+  timestamp: string;
+  kind: AiMonitorSnapshotKind;
+};
+
 export interface JoinRoomPayload {
   roomId: string;
 }

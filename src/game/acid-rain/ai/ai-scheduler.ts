@@ -3,11 +3,16 @@ import { randomUUID } from 'crypto';
 import type {
   JudgeWordSubmitInput,
   OpponentTypingEventPayload,
+  AiMonitorCandidate,
+  AiMonitorExecutionProfile,
+  AiMonitorSnapshot,
+  AiMonitorSnapshotPatch,
 } from '../acid-rain.interface';
 import { evaluateUtility } from './state-evaluator';
 import {
   DefaultAiExecutionProfileFactory,
   DefaultAiProfileProvider,
+  typoProbability,
   type AiExecutionProfileFactory,
   type AiProfileProvider,
 } from './ai-execution-profile';
@@ -28,6 +33,7 @@ import {
 } from './ai-execution.types';
 import { DEFAULT_PLAYER_SKILL } from '../../player-model';
 import type { PlayerSkillProfile } from '../../player-model';
+import type { UtilityDecision } from './state-evaluator';
 
 interface SchedulerState extends AiSchedulerRegistration {
   task?: AiExecutionTask;
@@ -46,7 +52,16 @@ interface SchedulerState extends AiSchedulerRegistration {
   profileLoadStarted: boolean;
   registrationToken: string;
   typingStateVersion: number;
+  executionProfile?: AiMonitorExecutionProfile;
+  lastDecision: UtilityDecision;
+  monitorPhase: NonNullable<OpponentTypingEventPayload['phase']>;
+  previousTargetWordId: string | null;
+  monitorStateVersion: number;
+  latestMonitorSnapshot?: AiMonitorSnapshot;
+  terminalEmitted: boolean;
 }
+
+const MAX_MONITOR_CANDIDATES = 5;
 
 const systemClock: Clock = { now: () => Date.now() };
 const systemTimer: Timer = {
@@ -94,6 +109,15 @@ export class AiScheduler {
         typeof this.profileProvider.loadSkillProfile === 'function',
       registrationToken: randomUUID(),
       typingStateVersion: 0,
+      lastDecision: {
+        action: 'NO_TARGET',
+        rankedCandidates: [],
+        reason: 'not_evaluated',
+      },
+      monitorPhase: 'IDLE',
+      previousTargetWordId: null,
+      monitorStateVersion: 0,
+      terminalEmitted: false,
     };
     this.rooms.set(registration.roomId, state);
     if (state.profileLoadStarted) void this.preloadProfile(state);
@@ -101,7 +125,13 @@ export class AiScheduler {
 
   onStateChange(change: AiStateChange): void {
     const state = this.rooms.get(change.roomId);
-    if (!state || state.destroyed || change.status !== 'IN_PROGRESS') return;
+    if (
+      !state ||
+      state.destroyed ||
+      state.terminalEmitted ||
+      change.status !== 'IN_PROGRESS'
+    )
+      return;
     if (change.stateVersion <= state.lastStateVersion) return;
     state.lastStateVersion = change.stateVersion;
 
@@ -109,6 +139,7 @@ export class AiScheduler {
       state.task &&
       !change.activeWords.some((word) => word.wordId === state.task?.wordId)
     ) {
+      state.previousTargetWordId = state.task.wordId;
       this.invalidateTask(state);
     }
 
@@ -135,8 +166,8 @@ export class AiScheduler {
   invalidate(roomId: string): void {
     const state = this.rooms.get(roomId);
     if (!state) return;
-    this.invalidateTask(state);
     state.destroyed = true;
+    this.invalidateTask(state);
   }
 
   destroy(roomId: string): void {
@@ -150,6 +181,58 @@ export class AiScheduler {
 
   hasRoom(roomId: string): boolean {
     return this.rooms.has(roomId);
+  }
+
+  getLatestMonitorSnapshot(roomId: string): AiMonitorSnapshot | undefined {
+    const snapshot = this.rooms.get(roomId)?.latestMonitorSnapshot;
+    return snapshot ? this.cloneMonitorSnapshot(snapshot) : undefined;
+  }
+
+  /** Emits the sole terminal patch before invalidate/destroy removes the room. */
+  emitTerminal(roomId: string): void {
+    const state = this.rooms.get(roomId);
+    if (!state || state.destroyed || state.terminalEmitted) return;
+    state.terminalEmitted = true;
+    if (!state.latestMonitorSnapshot) {
+      const skill = state.profileLoadStarted
+        ? state.profileSnapshot
+        : this.profileProvider.getSkillProfile({
+            roomId: state.roomId,
+            aiParticipantId: state.aiParticipantId,
+          });
+      const execution = this.profileFactory.create(skill, state.difficulty);
+      const evaluator = this.executor.evaluatorProfile(
+        execution,
+        state.difficulty,
+      );
+      state.executionProfile = {
+        difficulty: state.difficulty,
+        typingWpm: execution.typingWpm,
+        accuracy: execution.accuracy,
+        reactionDelayMs: execution.reactionDelayMs,
+        typoProbability: typoProbability(execution.accuracy, evaluator.config),
+        correctionDelayMs: evaluator.config.correctionDelayMs,
+        abandonProbability: evaluator.config.abandonProbability,
+      };
+    }
+    this.publishMonitorPatch(state, {
+      roomId,
+      participantId: state.aiParticipantId,
+      stateVersion: ++state.monitorStateVersion,
+      timestamp: new Date().toISOString(),
+      kind: 'TERMINAL',
+      currentDecision: {
+        ...(state.latestMonitorSnapshot?.currentDecision ?? {
+          action: 'NO_TARGET' as const,
+          targetWordId: null,
+          previousTargetWordId: null,
+        }),
+        phase: 'IDLE',
+      },
+      completedKeystrokes: state.task
+        ? this.executor.completedKeystrokesAt(state.task, this.clock.now())
+        : (state.latestMonitorSnapshot?.completedKeystrokes ?? 0),
+    });
   }
 
   private reevaluate(state: SchedulerState, change: AiStateChange): void {
@@ -189,6 +272,20 @@ export class AiScheduler {
           switchMargin: profile.switchMargin,
         },
       });
+
+      state.executionProfile = {
+        difficulty: state.difficulty,
+        typingWpm: execution.typingWpm,
+        accuracy: execution.accuracy,
+        reactionDelayMs: execution.reactionDelayMs,
+        typoProbability: typoProbability(execution.accuracy, profile.config),
+        correctionDelayMs: profile.config.correctionDelayMs,
+        abandonProbability: profile.config.abandonProbability,
+      };
+      state.previousTargetWordId =
+        state.task?.wordId ?? state.previousTargetWordId;
+      state.lastDecision = decision;
+      this.emitDecision(state, decision, change.activeWords);
 
       if (decision.action === 'KEEP') return;
       if (decision.action === 'ABANDON') {
@@ -237,6 +334,7 @@ export class AiScheduler {
       if (
         this.rooms.get(state.roomId) !== state ||
         state.destroyed ||
+        state.terminalEmitted ||
         state.registrationToken !== registrationToken ||
         state.modelPlayerId !== modelPlayerId
       ) {
@@ -378,7 +476,7 @@ export class AiScheduler {
   private emitPhase(
     state: SchedulerState,
     task: AiExecutionTask,
-    phase: OpponentTypingEventPayload['phase'],
+    phase: NonNullable<OpponentTypingEventPayload['phase']>,
     completedKeystrokes: number,
     partialText: string,
   ): void {
@@ -391,6 +489,7 @@ export class AiScheduler {
       return;
     task.lastEmittedPartialText = partialText;
     task.progressWasVisible = true;
+    state.monitorPhase = phase;
     state.emitTypingProgress({
       participantId: state.aiParticipantId,
       partialText,
@@ -400,6 +499,7 @@ export class AiScheduler {
       phase,
       stateVersion: ++state.typingStateVersion,
     });
+    this.emitMonitorPhase(state, task, phase, completedKeystrokes);
   }
 
   private clearProgress(state: SchedulerState, task: AiExecutionTask): void {
@@ -415,7 +515,130 @@ export class AiScheduler {
         phase: 'IDLE',
         stateVersion: ++state.typingStateVersion,
       });
+      state.monitorPhase = 'IDLE';
+      this.emitMonitorPhase(state, task, 'IDLE', task.totalKeystrokes);
     }
+  }
+
+  private emitDecision(
+    state: SchedulerState,
+    decision: UtilityDecision,
+    activeWords: readonly AiRuntimeWord[],
+  ): void {
+    this.publishMonitorPatch(state, {
+      roomId: state.roomId,
+      participantId: state.aiParticipantId,
+      stateVersion: ++state.monitorStateVersion,
+      timestamp: new Date().toISOString(),
+      kind: state.latestMonitorSnapshot ? 'DECISION' : 'FULL',
+      currentDecision: {
+        action: decision.action,
+        phase: state.monitorPhase,
+        targetWordId: decision.targetWordId ?? null,
+        previousTargetWordId: state.previousTargetWordId,
+      },
+      profile: { ...state.profileSnapshot, source: null },
+      executionProfile: state.executionProfile!,
+      candidates: this.toMonitorCandidates(activeWords, decision),
+      completedKeystrokes: state.task
+        ? this.executor.completedKeystrokesAt(state.task, this.clock.now())
+        : 0,
+      totalKeystrokes: state.task?.totalKeystrokes ?? 0,
+    });
+  }
+
+  private emitMonitorPhase(
+    state: SchedulerState,
+    task: AiExecutionTask,
+    phase: NonNullable<OpponentTypingEventPayload['phase']>,
+    completedKeystrokes: number,
+  ): void {
+    if (!state.latestMonitorSnapshot) return;
+    this.publishMonitorPatch(state, {
+      roomId: state.roomId,
+      participantId: state.aiParticipantId,
+      stateVersion: ++state.monitorStateVersion,
+      timestamp: new Date().toISOString(),
+      kind: 'PHASE',
+      currentDecision: {
+        ...state.latestMonitorSnapshot.currentDecision,
+        phase,
+      },
+      completedKeystrokes,
+      totalKeystrokes: task.totalKeystrokes,
+    });
+  }
+
+  private toMonitorCandidates(
+    activeWords: readonly AiRuntimeWord[],
+    decision: UtilityDecision,
+  ): AiMonitorCandidate[] {
+    const ranked = new Map(
+      decision.rankedCandidates.map((candidate) => [
+        candidate.wordId,
+        candidate,
+      ]),
+    );
+    const now = this.clock.now();
+    return activeWords.slice(0, MAX_MONITOR_CANDIDATES).map((word) => {
+      const candidate = ranked.get(word.wordId);
+      return {
+        wordId: word.wordId,
+        utility: candidate?.utility ?? null,
+        successProbability: candidate?.successProbability ?? null,
+        urgency: candidate?.urgency ?? null,
+        completionMs: candidate?.completionMs ?? null,
+        opportunityCost: candidate?.opportunityCost ?? null,
+        remainingMs: word.landAtMs - now,
+        eligible: candidate !== undefined,
+        selected: decision.targetWordId === word.wordId,
+      };
+    });
+  }
+
+  private publishMonitorPatch(
+    state: SchedulerState,
+    patch: AiMonitorSnapshotPatch,
+  ): void {
+    if (state.terminalEmitted && patch.kind !== 'TERMINAL') return;
+    const materialized: AiMonitorSnapshot = {
+      ...(state.latestMonitorSnapshot ?? {
+        roomId: state.roomId,
+        participantId: state.aiParticipantId,
+        currentDecision: {
+          action: 'NO_TARGET' as const,
+          phase: 'IDLE' as const,
+          targetWordId: null,
+          previousTargetWordId: null,
+        },
+        profile: { ...state.profileSnapshot, source: null },
+        executionProfile: state.executionProfile!,
+        candidates: [],
+        completedKeystrokes: 0,
+        totalKeystrokes: 0,
+      }),
+      ...patch,
+      kind: 'FULL',
+    };
+    state.latestMonitorSnapshot = materialized;
+    if (!state.emitMonitorSnapshot) return;
+    try {
+      state.emitMonitorSnapshot({ ...patch });
+    } catch (err) {
+      this.logger.error(
+        `AI monitor snapshot emit failed for room=${state.roomId}: ${String(err)}`,
+      );
+    }
+  }
+
+  private cloneMonitorSnapshot(snapshot: AiMonitorSnapshot): AiMonitorSnapshot {
+    return {
+      ...snapshot,
+      currentDecision: { ...snapshot.currentDecision },
+      profile: { ...snapshot.profile },
+      executionProfile: { ...snapshot.executionProfile },
+      candidates: snapshot.candidates.map((candidate) => ({ ...candidate })),
+    };
   }
 
   private isCurrentTask(
