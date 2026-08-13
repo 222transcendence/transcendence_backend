@@ -188,7 +188,12 @@ export class LobbyGateway implements OnModuleInit {
       });
   }
 
-  private onConnection(ws: WebSocket, userId: string, nickname: string, avatar?: string): void {
+  private onConnection(
+    ws: WebSocket,
+    userId: string,
+    nickname: string,
+    avatar?: string,
+  ): void {
     const client: LobbyClient = { ws, userId, nickname, avatar };
     this.lobbyService.addClient(client);
     websocketConnections.inc({ namespace: 'lobby' });
@@ -306,7 +311,11 @@ export class LobbyGateway implements OnModuleInit {
           maxPlayers,
         );
         client.roomId = room.id;
-        this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
+        this.chatGateway
+          .sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`)
+          .catch((err) =>
+            this.logger.error(`System message failed: ${String(err)}`),
+          );
         await this.broadcastRoomList();
         this.lobbyService.sendTo(client, 'ROOM_UPDATED', {
           room: toLobbyRoom(room),
@@ -322,9 +331,12 @@ export class LobbyGateway implements OnModuleInit {
         // 그렇지 않으면 CREATE_ROOM 직후 프론트가 자동으로 보내는 JOIN_ROOM(호스트
         // 본인 재확인용)에도 "입장했습니다" 메시지가 중복으로 발송된다.
         const beforeRoom = await this.gameService.getRoom(roomId);
-        const alreadyMember = !!beforeRoom?.players.some((p) => p.userId === client.userId);
+        const alreadyMember = !!beforeRoom?.players.some(
+          (p) => p.userId === client.userId,
+        );
 
-        const room = await this.gameService.joinRoom(roomId, client.userId, client.nickname)
+        const room = await this.gameService
+          .joinRoom(roomId, client.userId, client.nickname)
           .catch((err: Error) => {
             if (err?.constructor?.name === 'NotFoundException') {
               this.lobbyService.sendTo(client, 'ROOM_CLOSED', { roomId });
@@ -336,7 +348,14 @@ export class LobbyGateway implements OnModuleInit {
         client.roomId = room.id;
         this.cancelPendingLeave(client.userId, room.id);
         if (!alreadyMember) {
-          this.chatGateway.sendSystemMessage(room.id, `${client.nickname} 님이 입장하셨습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
+          this.chatGateway
+            .sendSystemMessage(
+              room.id,
+              `${client.nickname} 님이 입장하셨습니다.`,
+            )
+            .catch((err) =>
+              this.logger.error(`System message failed: ${String(err)}`),
+            );
         }
         await this.broadcastRoomList();
         this.lobbyService.broadcast('ROOM_UPDATED', {
