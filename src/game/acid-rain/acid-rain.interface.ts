@@ -70,11 +70,11 @@ export interface AcidRainSession {
   spawnLoopTimer: ReturnType<typeof setTimeout> | null;
   missLoopTimer: ReturnType<typeof setInterval> | null;
   matchEndTimer: ReturnType<typeof setTimeout> | null;
-  /** 현재 낙하 중인 단어별 레인 점유 현황 */
-  occupiedLanes: Set<number>;
   /** wordId → 최종 단어 상태, ACTIVE가 아닌 단어의 재판정 방지용 */
   resolvedWords: Map<string, ResolvedWord>;
   nextEliminationOrder: number;
+  /** 동시 활성 단어 수 상한 — 인원수에 비례(#100), 매치 시작 시 고정 */
+  maxActiveWords: number;
   mode: 'PVP' | 'AI_PRACTICE';
   status: 'COUNTDOWN' | 'IN_PROGRESS' | 'FINISHED';
   /** participantId → wordId → 타건 추적 상태 (#160) */
