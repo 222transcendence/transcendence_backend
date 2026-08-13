@@ -281,6 +281,7 @@ export class AcidRainGateway
         participantId: player.userId,
         userId: player.userId,
         nickname: player.nickname,
+        avatar: player.avatar,
         type: 'HUMAN',
         hp: 100,
       }));

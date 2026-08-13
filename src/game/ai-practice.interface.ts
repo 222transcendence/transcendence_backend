@@ -34,6 +34,7 @@ export interface AiPracticeSession {
 export interface CreateAiPracticeInput {
   ownerUserId: string;
   ownerNickname: string;
+  ownerAvatar?: string;
   requestId: string;
   difficulty: AiDifficulty;
 }

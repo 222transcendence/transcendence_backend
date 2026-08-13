@@ -176,6 +176,7 @@ describe('AiPracticeService', () => {
       {
         participantId: `ai:${result.roomId}`,
         nickname: 'ACID BOT',
+        avatar: '/ai-avatar.svg',
         type: 'AI',
         aiDifficulty: 'NORMAL',
       },

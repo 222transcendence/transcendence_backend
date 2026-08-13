@@ -238,11 +238,13 @@ export class AiPracticeService {
           participantId: input.ownerUserId,
           userId: input.ownerUserId,
           nickname: input.ownerNickname,
+          avatar: input.ownerAvatar,
           type: 'HUMAN',
         },
         {
           participantId: `ai:${roomId}`,
           nickname: 'ACID BOT',
+          avatar: '/ai-avatar.svg',
           type: 'AI',
           aiDifficulty: input.difficulty,
         },

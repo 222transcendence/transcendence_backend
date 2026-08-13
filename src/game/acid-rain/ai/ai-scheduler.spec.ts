@@ -64,6 +64,7 @@ function setup(monitorEmitter?: (payload: unknown) => void) {
   scheduler.registerRoom({
     roomId: 'room',
     aiParticipantId: 'ai:room',
+    modelPlayerId: 'human-1',
     difficulty: 'NORMAL',
     submitWord: (input) => {
       submitted.push(input);
@@ -417,6 +418,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     test.scheduler.registerRoom({
       roomId: 'room',
       aiParticipantId: 'ai:room',
+      modelPlayerId: 'human-1',
       difficulty: 'NORMAL',
       submitWord: submit,
       emitTypingProgress: (payload) => {
@@ -586,6 +588,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     abandoning.registerRoom({
       roomId: 'room',
       aiParticipantId: 'ai:room',
+      modelPlayerId: 'human-1',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
       emitTypingProgress: () => undefined,
@@ -632,6 +635,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     scheduler.registerRoom({
       roomId: 'room',
       aiParticipantId: 'ai:room',
+      modelPlayerId: 'human-1',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
       emitTypingProgress: () => undefined,
@@ -688,6 +692,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     scheduler.registerRoom({
       roomId: 'room',
       aiParticipantId: 'ai:room',
+      modelPlayerId: 'human-1',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
       emitTypingProgress: () => undefined,
@@ -726,6 +731,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     scheduler.registerRoom({
       roomId: 'room',
       aiParticipantId: 'ai:room',
+      modelPlayerId: 'human-1',
       difficulty: 'NORMAL',
       submitWord: (input) => Promise.resolve(accepted(input)),
       emitTypingProgress: () => undefined,

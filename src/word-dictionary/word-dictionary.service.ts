@@ -97,10 +97,12 @@ export class WordDictionaryService implements OnModuleInit {
   }
 
   /**
-   * 경과 시간 기반 난이도 가중치로 단어 선택 (GAME_DESIGN.md §3.4).
-   * - 0~30s: LOW만
-   * - 30~90s: LOW+MID 균등
-   * - 90s~: LOW/MID/HIGH = 40/35/25
+   * 경과 시간 기반 난이도 가중치로 단어 선택 (GAME_DESIGN.md §3.4, #100에서 페이스를
+   * 앞당김 — 예전엔 90초가 지나야 HIGH가 25% 확률로만 나와서, 180초 매치 절반이
+   * 지나야 어려운 단어를 거의 못 보는 문제가 있었다).
+   * - 0~10s: LOW만
+   * - 10~40s: LOW+MID 균등
+   * - 40s~: LOW/MID/HIGH = 25/35/40
    */
   pickWord(elapsedSec: number): WordEntry {
     const pool = this.selectPool(elapsedSec);
@@ -111,12 +113,12 @@ export class WordDictionaryService implements OnModuleInit {
   }
 
   private selectPool(elapsedSec: number): WordEntry[] {
-    if (elapsedSec < 30) return this.lowPool;
-    if (elapsedSec < 90) return this.lowMidPool;
+    if (elapsedSec < 10) return this.lowPool;
+    if (elapsedSec < 40) return this.lowMidPool;
 
     const roll = Math.random();
-    if (roll < 0.4) return this.lowPool;
-    if (roll < 0.75) return this.midPool;
+    if (roll < 0.25) return this.lowPool;
+    if (roll < 0.6) return this.midPool;
     return this.highPool;
   }
 
