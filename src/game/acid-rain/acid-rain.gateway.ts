@@ -487,10 +487,14 @@ export class AcidRainGateway
     if (partialText.length < prev.length) {
       state.correctionCount++;
     } else if (partialText.length > prev.length) {
-      const newChar = partialText[partialText.length - 1];
-      const expectedChar =
-        wordId.length >= partialText.length ? undefined : undefined;
-      void expectedChar; // reserved for future word-aware typo detection
+      const targetText = session.activeWords.get(wordId)?.text;
+      if (targetText) {
+        state.typoCount += AcidRainGateway.countMismatchedTypedCharacters(
+          partialText,
+          prev,
+          targetText,
+        );
+      }
       state.totalKeystrokes++;
     }
 
@@ -511,6 +515,19 @@ export class AcidRainGateway
       serverReceivedAt: now,
     });
     state.prevPartialText = partialText;
+  }
+
+  /** Count only newly appended characters that differ from the server word. */
+  private static countMismatchedTypedCharacters(
+    partialText: string,
+    previousText: string,
+    targetText: string,
+  ): number {
+    let mismatches = 0;
+    for (let index = previousText.length; index < partialText.length; index++) {
+      if (partialText[index] !== targetText[index]) mismatches++;
+    }
+    return mismatches;
   }
 
   // ─── word_submit ──────────────────────────────────────────────────────────

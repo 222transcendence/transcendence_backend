@@ -1,4 +1,5 @@
 import { ParticipantPerformance } from './entities/participant-performance.entity';
+import { KeystrokeRecord } from './entities/keystroke-record.entity';
 import { WordAttemptRecord } from './entities/word-attempt-record.entity';
 import { TypeOrmPlayerBehaviorSource } from './player-behavior-source';
 import { TypeOrmPlayerPerformanceSource } from './player-performance-source';
@@ -54,6 +55,23 @@ function attempt(
     typoCount: 0,
     correctionCount: 0,
     totalKeystrokes: 4,
+    ...overrides,
+  };
+}
+
+function keystroke(overrides: Partial<KeystrokeRecord> = {}): KeystrokeRecord {
+  return {
+    id: 'keystroke-1',
+    matchId: 'match-1',
+    participantId: 'human-1',
+    userId: 'user-a',
+    wordId: 'runtime-word-short',
+    sequence: 1,
+    partialText: '사',
+    textLength: 1,
+    inputType: 'PROGRESS',
+    clientTs: 1,
+    serverReceivedAt: new Date('2026-01-01T00:00:01Z'),
     ...overrides,
   };
 }
@@ -116,12 +134,31 @@ describe('TypeOrmPlayerBehaviorSource', () => {
     const attemptRepository = {
       createQueryBuilder: jest.fn(() => attemptBuilder),
     };
+    const keystrokeRepository = {
+      createQueryBuilder: jest.fn(() =>
+        queryBuilder([
+          keystroke({
+            id: 'delete',
+            sequence: 2,
+            inputType: 'DELETE',
+            serverReceivedAt: new Date('2026-01-01T00:00:02Z'),
+          }),
+          keystroke({
+            id: 'corrected',
+            sequence: 3,
+            inputType: 'PROGRESS',
+            serverReceivedAt: new Date('2026-01-01T00:00:02.250Z'),
+          }),
+        ]),
+      ),
+    };
     const performanceSource = new TypeOrmPlayerPerformanceSource(
       performanceRepository as never,
     );
     const source = new TypeOrmPlayerBehaviorSource(
       performanceSource,
       attemptRepository as never,
+      keystrokeRepository as never,
     );
 
     const result = await source.getRecentBehavior('user-a');
@@ -138,7 +175,8 @@ describe('TypeOrmPlayerBehaviorSource', () => {
       { wpm: 45, accuracy: 0.9, reactionTimeMs: 650 },
     ]);
     expect(result.abandonProbability).toBe(1 / 5);
-    expect(result.correctionDelayMs).toBeNull();
+    expect(result.correctionDelayMs).toBe(250);
+    expect(result.observationCounts.correction).toBe(1);
     expect(result.wordLengthPerformance.short).toMatchObject({
       value: 1,
       sampleCount: 1,
@@ -160,9 +198,14 @@ describe('TypeOrmPlayerBehaviorSource', () => {
     const performanceSource = new TypeOrmPlayerPerformanceSource({
       createQueryBuilder: () => queryBuilder([performance()]),
     } as never);
-    const source = new TypeOrmPlayerBehaviorSource(performanceSource, {
-      createQueryBuilder: () => queryBuilder([attempt({ result: 'CORRECT' })]),
-    } as never);
+    const source = new TypeOrmPlayerBehaviorSource(
+      performanceSource,
+      {
+        createQueryBuilder: () =>
+          queryBuilder([attempt({ result: 'CORRECT' })]),
+      } as never,
+      { createQueryBuilder: () => queryBuilder([]) } as never,
+    );
 
     await expect(source.getRecentBehavior('user-a')).resolves.toMatchObject({
       typoProbability: 0,
