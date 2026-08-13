@@ -32,6 +32,10 @@ export class WordAttemptRecord {
   @Column()
   wordId: string;
 
+  /** Server-authoritative target length from the spawned word snapshot. */
+  @Column('int', { nullable: true })
+  targetKeystrokes?: number | null;
+
   @Column('int', { default: 1 })
   attemptNo: number;
 

@@ -11,6 +11,7 @@ interface WordResolveInput {
   participantId: string;
   userId?: string;
   wordId: string;
+  targetKeystrokes?: number | null;
   result: WordAttemptResult;
   submittedText: string | null;
   submitReceivedAt: Date | null;
@@ -41,6 +42,7 @@ export class PerformanceService {
         participantId: input.participantId,
         userId: input.userId,
         wordId: input.wordId,
+        targetKeystrokes: input.targetKeystrokes ?? null,
         result: input.result,
         wordSpawnedAt: input.wordSpawnedAt,
         firstTypingAt: state.firstTypingAt,

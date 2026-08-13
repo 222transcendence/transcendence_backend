@@ -42,6 +42,7 @@ function attempt(
     participantId: 'human-1',
     userId: 'user-a',
     wordId: 'runtime-word-1',
+    targetKeystrokes: null,
     attemptNo: 1,
     result: 'GIVE_UP',
     wordSpawnedAt: new Date('2026-01-01T00:00:00Z'),
@@ -79,6 +80,7 @@ describe('TypeOrmPlayerBehaviorSource', () => {
       attempt({
         id: 'attempt-short',
         wordId: 'runtime-word-short',
+        targetKeystrokes: 5,
         result: 'CORRECT',
         totalKeystrokes: 4,
       }),
@@ -90,12 +92,14 @@ describe('TypeOrmPlayerBehaviorSource', () => {
       attempt({
         id: 'attempt-medium',
         wordId: 'runtime-word-3',
+        targetKeystrokes: 8,
         result: 'CORRECT',
         totalKeystrokes: 8,
       }),
       attempt({
         id: 'attempt-long',
         wordId: 'runtime-word-long',
+        targetKeystrokes: 12,
         result: 'CORRECT',
         totalKeystrokes: 12,
       }),
@@ -135,9 +139,21 @@ describe('TypeOrmPlayerBehaviorSource', () => {
     ]);
     expect(result.abandonProbability).toBe(1 / 5);
     expect(result.correctionDelayMs).toBeNull();
-    expect(result.wordLengthPerformance.short.value).toBeNull();
-    expect(result.wordLengthPerformance.medium.value).toBeNull();
-    expect(result.wordLengthPerformance.long.value).toBeNull();
+    expect(result.wordLengthPerformance.short).toMatchObject({
+      value: 1,
+      sampleCount: 1,
+      available: true,
+    });
+    expect(result.wordLengthPerformance.medium).toMatchObject({
+      value: 1,
+      sampleCount: 1,
+      available: true,
+    });
+    expect(result.wordLengthPerformance.long).toMatchObject({
+      value: 1,
+      sampleCount: 1,
+      available: true,
+    });
   });
 
   it('preserves an observed zero typo probability', async () => {

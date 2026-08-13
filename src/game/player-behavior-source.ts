@@ -114,10 +114,15 @@ function buildBehaviorMetrics(attempts: WordAttemptRecord[]) {
   const abandonProbability =
     started.length > 0 ? abandoned.length / started.length : null;
   const wordLengthPerformance: WordLengthPerformance = {
-    short: unavailableObservation(),
-    medium: unavailableObservation(),
-    long: unavailableObservation(),
+    short: wordLengthObservation(attempts, 'short'),
+    medium: wordLengthObservation(attempts, 'medium'),
+    long: wordLengthObservation(attempts, 'long'),
   };
+  const wordLengthSampleCount = attempts.filter(
+    (attempt) =>
+      typeof attempt.targetKeystrokes === 'number' &&
+      attempt.targetKeystrokes > 0,
+  ).length;
 
   return {
     typoProbability,
@@ -128,7 +133,7 @@ function buildBehaviorMetrics(attempts: WordAttemptRecord[]) {
       typo: totalKeystrokes,
       correction: 0,
       abandon: abandoned.length,
-      wordLength: 0,
+      wordLength: wordLengthSampleCount,
     },
   };
 }
@@ -139,5 +144,40 @@ function unavailableObservation() {
     sampleCount: 0,
     confidence: 0,
     available: false,
+  };
+}
+
+type WordLengthBucket = 'short' | 'medium' | 'long';
+
+function wordLengthBucket(targetKeystrokes: number): WordLengthBucket {
+  if (targetKeystrokes <= 5) return 'short';
+  if (targetKeystrokes <= 8) return 'medium';
+  return 'long';
+}
+
+function wordLengthObservation(
+  attempts: WordAttemptRecord[],
+  bucket: WordLengthBucket,
+) {
+  const observed = attempts.filter(
+    (attempt) =>
+      typeof attempt.targetKeystrokes === 'number' &&
+      attempt.targetKeystrokes > 0 &&
+      wordLengthBucket(attempt.targetKeystrokes) === bucket,
+  );
+  if (observed.length === 0) return unavailableObservation();
+  const successful = observed.filter(
+    (attempt) =>
+      attempt.result === 'CORRECT' ||
+      attempt.result === 'CORRECT_AFTER_CORRECTION',
+  ).length;
+  return {
+    value: successful / observed.length,
+    sampleCount: observed.length,
+    confidence: Math.min(
+      1,
+      observed.length / PLAYER_PERSONALIZATION_CONFIG.priorSampleCount,
+    ),
+    available: true,
   };
 }

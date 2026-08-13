@@ -513,12 +513,14 @@ export class AcidRainService implements OnModuleInit {
     const now = new Date();
     const spawnedAtStr = session.resolvedWords.get(input.wordId)?.spawnedAt;
     const wordSpawnedAt = spawnedAtStr ? new Date(spawnedAtStr) : null;
+    const targetKeystrokes = session.resolvedWords.get(input.wordId)?.targetKeystrokes;
     void this.performanceService
       .flushWordAttempt({
         matchId: roomId,
         participantId: input.playerId,
         userId: participant.userId,
         wordId: input.wordId,
+        targetKeystrokes,
         result: state?.typoCount === 0 ? 'CORRECT' : 'CORRECT_AFTER_CORRECTION',
         submittedText: input.text,
         submitReceivedAt: now,
@@ -564,6 +566,7 @@ export class AcidRainService implements OnModuleInit {
         participantId: input.playerId,
         userId: participant.userId,
         wordId: input.wordId,
+        targetKeystrokes: session.activeWords.get(input.wordId)?.keystrokes,
         result: 'WRONG',
         submittedText,
         submitReceivedAt: now,
@@ -593,6 +596,7 @@ export class AcidRainService implements OnModuleInit {
           participantId: participant.participantId,
           userId: participant.userId,
           wordId,
+          targetKeystrokes: session.resolvedWords.get(wordId)?.targetKeystrokes,
           result: 'MISSED',
           submittedText: null,
           submitReceivedAt: null,
@@ -1398,6 +1402,7 @@ export class AcidRainService implements OnModuleInit {
       playerId,
       attemptId,
       spawnedAt: word.spawnedAt,
+      targetKeystrokes: word.keystrokes,
     });
     session.stateVersion += 1;
     return true;
