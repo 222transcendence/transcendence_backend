@@ -57,7 +57,9 @@ const REDIS_TTL = 1800; // seconds
 const ATTEMPT_RESULT_TTL_MS = 5 * 60 * 1000;
 const MATCH_END_RETRY_DELAY_MS = 1000;
 export const ACID_RAIN_RANDOM = Symbol('ACID_RAIN_RANDOM');
-const MAX_ACTIVE_WORDS = 5;
+// 동시 활성 단어 수 상한은 참가자 수에 비례한다(#100) — 예전엔 인원수와 무관하게
+// 항상 5개였다. 2인 매치 기준 10개(예전의 2배)가 되도록 인당 5개로 잡는다.
+const WORDS_PER_PLAYER = 5;
 const SPLASH_DAMAGE = 3;
 
 type FinalizationStatus = 'PENDING' | 'COMPLETED' | 'FAILED';
@@ -190,9 +192,9 @@ export class AcidRainService implements OnModuleInit {
       spawnLoopTimer: null,
       missLoopTimer: null,
       matchEndTimer: null,
-      occupiedLanes: new Set(),
       resolvedWords: new Map(),
       nextEliminationOrder: 1,
+      maxActiveWords: WORDS_PER_PLAYER * participants.length,
       mode,
       status: 'COUNTDOWN',
       typingTracker: new Map(),
@@ -275,7 +277,7 @@ export class AcidRainService implements OnModuleInit {
         return;
       }
       const elapsed = (Date.now() - session.startedAt) / 1000;
-      if (session.activeWords.size >= MAX_ACTIVE_WORDS) {
+      if (session.activeWords.size >= session.maxActiveWords) {
         scheduleNext(elapsed);
         return;
       }
@@ -315,7 +317,6 @@ export class AcidRainService implements OnModuleInit {
         damage,
       };
       session.activeWords.set(wordId, active);
-      session.occupiedLanes.add(lane);
       session.stateVersion += 1;
 
       const payload: WordSpawnPayload = {
@@ -341,11 +342,45 @@ export class AcidRainService implements OnModuleInit {
     session.spawnLoopTimer = setTimeout(tick, initialInterval);
   }
 
+  // 참가자 수에 비례해 활성 단어 수 상한(maxActiveWords)이 레인 수(LANE_COUNT=5)를
+  // 넘어설 수 있으므로(#100), 레인당 1개라는 예전 가정을 버리고 매번 실시간
+  // activeWords에서 레인별 점유 개수를 계산한다. 완전히 빈 레인이 있으면 그중에서도
+  // 이미 단어가 있는 레인과 바로 인접(±1)하지 않은 레인을 우선한다 — 블록이 커진
+  // 단어(#98)끼리 옆 레인에서 동시에 떨어지며 겹쳐 보이는 것을 줄이기 위함이다.
+  // 빈 레인이 전혀 없으면(활성 단어 수가 레인 수 이상) 가장 적게 점유된 레인으로 몬다.
   private assignLane(session: AcidRainSession): number {
-    for (let i = 0; i < LANE_COUNT; i++) {
-      if (!session.occupiedLanes.has(i)) return i;
+    const occupiedCount = new Map<number, number>();
+    for (const word of session.activeWords.values()) {
+      occupiedCount.set(word.lane, (occupiedCount.get(word.lane) ?? 0) + 1);
     }
-    return Math.floor(Math.random() * LANE_COUNT);
+
+    const emptyLanes: number[] = [];
+    for (let i = 0; i < LANE_COUNT; i++) {
+      if (!occupiedCount.has(i)) emptyLanes.push(i);
+    }
+
+    const nonAdjacentEmptyLanes = emptyLanes.filter(
+      (lane) => !occupiedCount.has(lane - 1) && !occupiedCount.has(lane + 1),
+    );
+    if (nonAdjacentEmptyLanes.length > 0) {
+      return nonAdjacentEmptyLanes[
+        Math.floor(this.random() * nonAdjacentEmptyLanes.length)
+      ];
+    }
+    if (emptyLanes.length > 0) {
+      return emptyLanes[Math.floor(this.random() * emptyLanes.length)];
+    }
+
+    let leastOccupiedLane = 0;
+    let leastCount = Infinity;
+    for (let i = 0; i < LANE_COUNT; i++) {
+      const count = occupiedCount.get(i) ?? 0;
+      if (count < leastCount) {
+        leastCount = count;
+        leastOccupiedLane = i;
+      }
+    }
+    return leastOccupiedLane;
   }
 
   // ─── 바닥 도달(미스) 감지 루프 ───────────────────────────────────────────
@@ -1308,7 +1343,6 @@ export class AcidRainService implements OnModuleInit {
     const word = session.activeWords.get(wordId);
     if (!word || session.resolvedWords.has(wordId)) return false;
     session.activeWords.delete(wordId);
-    session.occupiedLanes.delete(word.lane);
     session.resolvedWords.set(wordId, {
       state,
       playerId,
