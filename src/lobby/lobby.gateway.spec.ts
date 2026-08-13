@@ -316,7 +316,7 @@ describe('LobbyGateway disconnect cleanup (#145)', () => {
     gameService = {
       leaveRoom: jest.fn().mockResolvedValue(null),
       getWaitingRooms: jest.fn().mockResolvedValue([]),
-      getRoom: jest.fn(),
+      getRoom: jest.fn().mockResolvedValue(null),
     };
     chatGateway = {
       sendSystemMessage: jest.fn().mockResolvedValue(undefined),
