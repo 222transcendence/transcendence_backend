@@ -18,6 +18,9 @@ export interface AiExecutionProfile {
   typingWpm: number;
   accuracy: number;
   reactionDelayMs: number;
+  typoProbability?: number;
+  correctionDelayMs?: number;
+  abandonProbability?: number;
 }
 
 const RAW_WPM_RANGE = { min: 20, max: 140 } as const;

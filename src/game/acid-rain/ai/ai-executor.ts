@@ -64,6 +64,7 @@ export class AiExecutor {
     const typoChance = typoProbability(
       profile.execution.accuracy,
       profile.config,
+      profile.execution.typoProbability,
     );
 
     for (let index = 0; index < word.keystrokes; index += 1) {

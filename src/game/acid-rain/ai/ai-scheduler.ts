@@ -33,6 +33,8 @@ import {
 } from './ai-execution.types';
 import { DEFAULT_PLAYER_SKILL } from '../../player-model';
 import type { PlayerSkillProfile } from '../../player-model';
+import type { PlayerRuntimeProfile } from '../../player-personalization.config';
+import { PLAYER_PERSONALIZATION_CONFIG } from '../../player-personalization.config';
 import type { UtilityDecision } from './state-evaluator';
 
 interface SchedulerState extends AiSchedulerRegistration {
@@ -49,6 +51,7 @@ interface SchedulerState extends AiSchedulerRegistration {
   paused: boolean;
   destroyed: boolean;
   profileSnapshot: PlayerSkillProfile;
+  runtimeProfile: PlayerRuntimeProfile;
   profileLoadStarted: boolean;
   registrationToken: string;
   typingStateVersion: number;
@@ -68,6 +71,43 @@ const systemTimer: Timer = {
   setTimeout: (callback, delayMs) => setTimeout(callback, delayMs),
   clearTimeout: (timer) => clearTimeout(timer),
 };
+
+function defaultRuntimeProfile(): PlayerRuntimeProfile {
+  return {
+    wpm: DEFAULT_PLAYER_SKILL.wpm,
+    accuracy: DEFAULT_PLAYER_SKILL.accuracy,
+    reactionTimeMs: DEFAULT_PLAYER_SKILL.reactionTimeMs,
+    sampleCount: 0,
+    confidence: 0,
+    source: 'DEFAULT',
+    profileVersion: PLAYER_PERSONALIZATION_CONFIG.version,
+    populationDefaultVersion: null,
+    fallbackReason: 'NO_PERSONAL_SAMPLES',
+    typoProbability: {
+      value: null,
+      sampleCount: 0,
+      confidence: 0,
+      available: false,
+    },
+    correctionDelayMs: {
+      value: null,
+      sampleCount: 0,
+      confidence: 0,
+      available: false,
+    },
+    abandonProbability: {
+      value: null,
+      sampleCount: 0,
+      confidence: 0,
+      available: false,
+    },
+    wordLengthPerformance: {
+      short: { value: null, sampleCount: 0, confidence: 0, available: false },
+      medium: { value: null, sampleCount: 0, confidence: 0, available: false },
+      long: { value: null, sampleCount: 0, confidence: 0, available: false },
+    },
+  };
+}
 
 @Injectable()
 export class AiScheduler {
@@ -105,7 +145,9 @@ export class AiScheduler {
       paused: false,
       destroyed: false,
       profileSnapshot: { ...DEFAULT_PLAYER_SKILL },
+      runtimeProfile: defaultRuntimeProfile(),
       profileLoadStarted:
+        typeof this.profileProvider.loadProfile === 'function' ||
         typeof this.profileProvider.loadSkillProfile === 'function',
       registrationToken: randomUUID(),
       typingStateVersion: 0,
@@ -200,7 +242,11 @@ export class AiScheduler {
             roomId: state.roomId,
             aiParticipantId: state.aiParticipantId,
           });
-      const execution = this.profileFactory.create(skill, state.difficulty);
+      const execution = this.profileFactory.create(
+        skill,
+        state.difficulty,
+        state.runtimeProfile,
+      );
       const evaluator = this.executor.evaluatorProfile(
         execution,
         state.difficulty,
@@ -210,7 +256,11 @@ export class AiScheduler {
         typingWpm: execution.typingWpm,
         accuracy: execution.accuracy,
         reactionDelayMs: execution.reactionDelayMs,
-        typoProbability: typoProbability(execution.accuracy, evaluator.config),
+        typoProbability: typoProbability(
+          execution.accuracy,
+          evaluator.config,
+          execution.typoProbability,
+        ),
         correctionDelayMs: evaluator.config.correctionDelayMs,
         abandonProbability: evaluator.config.abandonProbability,
       };
@@ -245,7 +295,11 @@ export class AiScheduler {
             roomId: state.roomId,
             aiParticipantId: state.aiParticipantId,
           });
-      const execution = this.profileFactory.create(skill, state.difficulty);
+      const execution = this.profileFactory.create(
+        skill,
+        state.difficulty,
+        state.runtimeProfile,
+      );
       const profile = this.executor.evaluatorProfile(
         execution,
         state.difficulty,
@@ -278,7 +332,11 @@ export class AiScheduler {
         typingWpm: execution.typingWpm,
         accuracy: execution.accuracy,
         reactionDelayMs: execution.reactionDelayMs,
-        typoProbability: typoProbability(execution.accuracy, profile.config),
+        typoProbability: typoProbability(
+          execution.accuracy,
+          profile.config,
+          execution.typoProbability,
+        ),
         correctionDelayMs: profile.config.correctionDelayMs,
         abandonProbability: profile.config.abandonProbability,
       };
@@ -320,17 +378,28 @@ export class AiScheduler {
   }
 
   private async preloadProfile(state: SchedulerState): Promise<void> {
-    if (!this.profileProvider.loadSkillProfile) return;
+    if (
+      !this.profileProvider.loadProfile &&
+      !this.profileProvider.loadSkillProfile
+    )
+      return;
 
     const registrationToken = state.registrationToken;
     const modelPlayerId = state.modelPlayerId;
     try {
-      const profile = await this.profileProvider.loadSkillProfile({
-        roomId: state.roomId,
-        aiParticipantId: state.aiParticipantId,
-        modelPlayerId,
-        difficulty: state.difficulty,
-      });
+      const profile = this.profileProvider.loadProfile
+        ? await this.profileProvider.loadProfile({
+            roomId: state.roomId,
+            aiParticipantId: state.aiParticipantId,
+            modelPlayerId,
+            difficulty: state.difficulty,
+          })
+        : await this.profileProvider.loadSkillProfile!({
+            roomId: state.roomId,
+            aiParticipantId: state.aiParticipantId,
+            modelPlayerId,
+            difficulty: state.difficulty,
+          });
       if (
         this.rooms.get(state.roomId) !== state ||
         state.destroyed ||
@@ -340,7 +409,18 @@ export class AiScheduler {
       ) {
         return;
       }
-      state.profileSnapshot = profile;
+      if ('source' in profile) {
+        state.runtimeProfile = profile as PlayerRuntimeProfile;
+        state.profileSnapshot = {
+          wpm: profile.wpm,
+          accuracy: profile.accuracy,
+          reactionTimeMs: profile.reactionTimeMs,
+          sampleCount: profile.sampleCount,
+          confidence: profile.confidence,
+        };
+      } else {
+        state.profileSnapshot = profile;
+      }
     } catch (err) {
       if (this.rooms.get(state.roomId) !== state || state.destroyed) return;
       this.logger.error(
@@ -537,7 +617,7 @@ export class AiScheduler {
         targetWordId: decision.targetWordId ?? null,
         previousTargetWordId: state.previousTargetWordId,
       },
-      profile: { ...state.profileSnapshot, source: null },
+      profile: this.toMonitorProfile(state),
       executionProfile: state.executionProfile!,
       candidates: this.toMonitorCandidates(activeWords, decision),
       completedKeystrokes: state.task
@@ -611,7 +691,7 @@ export class AiScheduler {
           targetWordId: null,
           previousTargetWordId: null,
         },
-        profile: { ...state.profileSnapshot, source: null },
+        profile: this.toMonitorProfile(state),
         executionProfile: state.executionProfile!,
         candidates: [],
         completedKeystrokes: 0,
@@ -638,6 +718,44 @@ export class AiScheduler {
       profile: { ...snapshot.profile },
       executionProfile: { ...snapshot.executionProfile },
       candidates: snapshot.candidates.map((candidate) => ({ ...candidate })),
+    };
+  }
+
+  private toMonitorProfile(state: SchedulerState) {
+    const profile = state.runtimeProfile;
+    return {
+      wpm: profile.wpm,
+      accuracy: profile.accuracy,
+      reactionTimeMs: profile.reactionTimeMs,
+      sampleCount: profile.sampleCount,
+      confidence: profile.confidence,
+      source: profile.source,
+      profileVersion: profile.profileVersion,
+      populationDefaultVersion: profile.populationDefaultVersion,
+      fallbackReason: profile.fallbackReason,
+      metricConfidence: {
+        wpm: {
+          sampleCount: profile.sampleCount,
+          confidence: profile.confidence,
+          available: profile.sampleCount > 0,
+        },
+        accuracy: {
+          sampleCount: profile.sampleCount,
+          confidence: profile.confidence,
+          available: profile.sampleCount > 0,
+        },
+        reactionTimeMs: {
+          sampleCount: profile.sampleCount,
+          confidence: profile.confidence,
+          available: profile.sampleCount > 0,
+        },
+        typoProbability: profile.typoProbability,
+        correctionDelayMs: profile.correctionDelayMs,
+        abandonProbability: profile.abandonProbability,
+        shortWordPerformance: profile.wordLengthPerformance.short,
+        mediumWordPerformance: profile.wordLengthPerformance.medium,
+        longWordPerformance: profile.wordLengthPerformance.long,
+      },
     };
   }
 

@@ -5,6 +5,7 @@ import type {
   PlayerSkillProfile,
 } from '../../player-model';
 import type { AiTypingProfile } from './state-evaluator';
+import type { PlayerRuntimeProfile } from '../../player-personalization.config';
 
 export interface AiExecutionConfig {
   minimumAsyncDelayMs: number;
@@ -26,12 +27,19 @@ export interface AiProfileProvider {
     modelPlayerId: string;
     difficulty: AiDifficulty;
   }): Promise<PlayerSkillProfile>;
+  loadProfile?(context: {
+    roomId: string;
+    aiParticipantId: string;
+    modelPlayerId: string;
+    difficulty: AiDifficulty;
+  }): Promise<PlayerRuntimeProfile>;
 }
 
 export interface AiExecutionProfileFactory {
   create(
     skill: PlayerSkillProfile,
     difficulty: AiDifficulty,
+    runtimeProfile?: PlayerRuntimeProfile,
   ): AiExecutionProfile;
 }
 
@@ -74,8 +82,22 @@ export class DefaultAiExecutionProfileFactory implements AiExecutionProfileFacto
   create(
     skill: PlayerSkillProfile,
     difficulty: AiDifficulty,
+    runtimeProfile?: PlayerRuntimeProfile,
   ): AiExecutionProfile {
-    return toAiExecutionProfile(skill, difficulty);
+    const execution = toAiExecutionProfile(skill, difficulty);
+    if (!runtimeProfile) return execution;
+    return {
+      ...execution,
+      typoProbability: runtimeProfile.typoProbability.available
+        ? (runtimeProfile.typoProbability.value ?? undefined)
+        : undefined,
+      correctionDelayMs: runtimeProfile.correctionDelayMs.available
+        ? (runtimeProfile.correctionDelayMs.value ?? undefined)
+        : undefined,
+      abandonProbability: runtimeProfile.abandonProbability.available
+        ? (runtimeProfile.abandonProbability.value ?? undefined)
+        : undefined,
+    };
   }
 }
 
@@ -89,6 +111,15 @@ export function createEvaluatorProfile(
   difficulty: AiDifficulty,
 ): AiEvaluatorProfile {
   const config = DIFFICULTY_EXECUTION_CONFIG[difficulty];
+  const effectiveConfig = {
+    ...config,
+    correctionDelayMs: Number.isFinite(execution.correctionDelayMs)
+      ? Math.max(0, execution.correctionDelayMs!)
+      : config.correctionDelayMs,
+    abandonProbability: Number.isFinite(execution.abandonProbability)
+      ? Math.min(1, Math.max(0, execution.abandonProbability!))
+      : config.abandonProbability,
+  };
   const perKeystrokeMs = 60000 / (execution.typingWpm * 5);
   if (!Number.isFinite(perKeystrokeMs) || perKeystrokeMs <= 0) {
     throw new RangeError('typing profile produced an invalid keystroke delay');
@@ -103,14 +134,24 @@ export function createEvaluatorProfile(
     opportunityCostWeight: 0.25,
     switchMargin: 0.1,
     execution,
-    config,
+    config: effectiveConfig,
   };
 }
 
 export function typoProbability(
   accuracy: number,
   config: AiExecutionConfig,
+  personalizedProbability?: number,
 ): number {
+  if (
+    personalizedProbability !== undefined &&
+    Number.isFinite(personalizedProbability)
+  ) {
+    return Math.min(
+      config.typoCeiling,
+      Math.max(config.typoFloor, personalizedProbability),
+    );
+  }
   if (!Number.isFinite(accuracy))
     throw new RangeError('accuracy must be finite');
   const normalized = Math.min(1, Math.max(0, accuracy));

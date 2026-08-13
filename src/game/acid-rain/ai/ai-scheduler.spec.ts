@@ -112,7 +112,7 @@ describe('AiScheduler lifecycle and race guards', () => {
 
     expect(test.monitor[0]).toMatchObject({
       kind: 'FULL',
-      profile: { sampleCount: 0, source: null },
+      profile: { sampleCount: 0, source: 'DEFAULT' },
       executionProfile: { difficulty: 'NORMAL' },
       candidates: [{ wordId: 'w1', eligible: true, selected: true }],
     });
@@ -126,7 +126,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     const latest = test.scheduler.getLatestMonitorSnapshot('room');
     expect(latest).toMatchObject({
       kind: 'FULL',
-      profile: { source: null },
+      profile: { source: 'DEFAULT' },
       candidates: [{ wordId: 'w1' }],
     });
     expect(latest?.stateVersion).toBe(2);

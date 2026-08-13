@@ -151,7 +151,22 @@ export interface AiMonitorPlayerProfile {
   reactionTimeMs: number;
   sampleCount: number;
   confidence: number;
-  source: null;
+  source: 'DEFAULT' | 'BLENDED' | 'PERSONALIZED' | null;
+  profileVersion?: string | null;
+  populationDefaultVersion?: string | null;
+  fallbackReason?:
+    | 'NO_USER'
+    | 'NO_PERSONAL_SAMPLES'
+    | 'NONE'
+    | 'PROFILE_SOURCE_ERROR';
+  metricConfidence?: Record<
+    string,
+    {
+      sampleCount: number;
+      confidence: number;
+      available: boolean;
+    }
+  >;
 }
 
 export interface AiMonitorExecutionProfile {

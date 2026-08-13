@@ -27,6 +27,19 @@ export class TypeOrmPlayerPerformanceSource implements PlayerPerformanceSource {
     modelPlayerId: string,
     limit?: number,
   ): Promise<PlayerPerformanceSample[]> {
+    const records = await this.getRecentPerformanceRecords(
+      modelPlayerId,
+      limit,
+    );
+    return records
+      .map(toPerformanceSample)
+      .filter((sample): sample is PlayerPerformanceSample => sample !== null);
+  }
+
+  async getRecentPerformanceRecords(
+    modelPlayerId: string,
+    limit?: number,
+  ): Promise<ParticipantPerformance[]> {
     const normalizedLimit = normalizeLimit(limit);
     if (normalizedLimit === 0) return [];
 
@@ -55,8 +68,7 @@ export class TypeOrmPlayerPerformanceSource implements PlayerPerformanceSource {
       .getMany();
 
     return records
-      .map(toPerformanceSample)
-      .filter((sample): sample is PlayerPerformanceSample => sample !== null)
+      .filter((record) => toPerformanceSample(record) !== null)
       .slice(0, normalizedLimit);
   }
 }
