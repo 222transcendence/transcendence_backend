@@ -106,6 +106,21 @@ export class LobbyGateway implements OnModuleInit {
     }
   }
 
+  // 호스트가 나가서 다른 플레이어로 자동 승격됐을 때 채팅창에 알림 — 기존
+  // 입/퇴장 메시지와 동일한 fire-and-forget 패턴.
+  private announceHostChange(roomId: string, room: GameRoom): void {
+    const newHost = room.players.find((p) => p.userId === room.hostUserId);
+    if (!newHost) return;
+    this.chatGateway
+      .sendSystemMessage(
+        roomId,
+        `${newHost.nickname} 님이 호스트가 되었습니다.`,
+      )
+      .catch((err) =>
+        this.logger.error(`System message failed: ${String(err)}`),
+      );
+  }
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly userService: UserService,
@@ -219,18 +234,30 @@ export class LobbyGateway implements OnModuleInit {
         }
         const timer = setTimeout(() => {
           this.roomLeaveTimers.delete(userId);
-          this.chatGateway.sendSystemMessage(roomId, `${nickname} 님이 방을 나갔습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
+          this.chatGateway
+            .sendSystemMessage(roomId, `${nickname} 님이 방을 나갔습니다.`)
+            .catch((err) =>
+              this.logger.error(`System message failed: ${String(err)}`),
+            );
           this.gameService
-            .leaveRoom(roomId, userId)
-            .then((updatedRoom) => {
-              if (updatedRoom) {
-                this.lobbyService.broadcast('ROOM_UPDATED', {
-                  room: toLobbyRoom(updatedRoom),
+            .getRoom(roomId)
+            .then((beforeRoom) => {
+              const wasHost = beforeRoom?.hostUserId === userId;
+              return this.gameService
+                .leaveRoom(roomId, userId)
+                .then((updatedRoom) => {
+                  if (updatedRoom) {
+                    if (wasHost && updatedRoom.hostUserId !== userId) {
+                      this.announceHostChange(roomId, updatedRoom);
+                    }
+                    this.lobbyService.broadcast('ROOM_UPDATED', {
+                      room: toLobbyRoom(updatedRoom),
+                    });
+                  } else {
+                    this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
+                  }
+                  return this.broadcastRoomList();
                 });
-              } else {
-                this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
-              }
-              return this.broadcastRoomList();
             })
             .catch((err) =>
               this.logger.error(
@@ -336,10 +363,22 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'LEAVE_ROOM': {
         const { roomId } = payload as { roomId: string };
-        this.chatGateway.sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
-        const updatedRoom = await this.gameService.leaveRoom(roomId, client.userId);
+        const beforeRoom = await this.gameService.getRoom(roomId);
+        const wasHost = beforeRoom?.hostUserId === client.userId;
+        this.chatGateway
+          .sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`)
+          .catch((err) =>
+            this.logger.error(`System message failed: ${String(err)}`),
+          );
+        const updatedRoom = await this.gameService.leaveRoom(
+          roomId,
+          client.userId,
+        );
         client.roomId = undefined;
         if (updatedRoom) {
+          if (wasHost && updatedRoom.hostUserId !== client.userId) {
+            this.announceHostChange(roomId, updatedRoom);
+          }
           this.lobbyService.broadcast('ROOM_UPDATED', {
             room: toLobbyRoom(updatedRoom),
           });
