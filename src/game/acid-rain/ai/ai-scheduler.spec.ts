@@ -1,6 +1,7 @@
 import type {
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
+  OpponentTypingEventPayload,
 } from '../acid-rain.interface';
 import { AiExecutor } from './ai-executor';
 import { AiScheduler } from './ai-scheduler';
@@ -51,7 +52,7 @@ function setup(monitorEmitter?: (payload: unknown) => void) {
   const random: RandomSource = { next: () => 1 };
   const executor = new AiExecutor(clock, random);
   const submitted: JudgeWordSubmitInput[] = [];
-  const progress: Array<Record<string, unknown>> = [];
+  const progress: OpponentTypingEventPayload[] = [];
   const monitor: Array<Record<string, unknown>> = [];
   const scheduler = new AiScheduler(
     executor,
@@ -422,7 +423,7 @@ describe('AiScheduler lifecycle and race guards', () => {
       difficulty: 'NORMAL',
       submitWord: submit,
       emitTypingProgress: (payload) => {
-        test.progress.push(payload as Record<string, unknown>);
+        test.progress.push(payload);
       },
     });
     test.scheduler.onStateChange({

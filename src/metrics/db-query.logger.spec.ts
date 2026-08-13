@@ -46,7 +46,6 @@ describe('DbQueryLogger', () => {
     new PopulationDefaultReportLogger().logQueryError(
       'db failure',
       'SELECT * FROM participant_performances WHERE userId IN ($1)',
-      ['private-user-id'],
     );
 
     expect(error).toHaveBeenCalledWith(

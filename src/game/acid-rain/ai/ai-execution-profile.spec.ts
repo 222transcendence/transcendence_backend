@@ -40,6 +40,7 @@ describe('AI execution profile adapter', () => {
       source: 'PERSONALIZED',
       profileVersion: 'player-personalization-v1',
       populationDefaultVersion: null,
+      fallbackReason: 'NONE',
       typoProbability: {
         value: 0.1,
         sampleCount: 10,
