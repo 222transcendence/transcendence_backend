@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import {
   buildPlayerSkillProfile,
   DEFAULT_PLAYER_SKILL,
@@ -22,7 +22,11 @@ import { TypeOrmPlayerBehaviorSource } from '../../player-behavior-source';
 export class PlayerPerformanceProfileProvider implements AiProfileProvider {
   private readonly logger = new Logger(PlayerPerformanceProfileProvider.name);
 
+  // 생성자 파라미터 타입이 교차 타입(TypeOrmPlayerBehaviorSource & Partial<...>)이면
+  // TypeScript의 emitDecoratorMetadata가 design:paramtypes에 구체 클래스 대신 Object를
+  // 내보내서 Nest가 자동으로 주입 토큰을 추론하지 못한다 — @Inject로 명시해야 한다.
   constructor(
+    @Inject(TypeOrmPlayerBehaviorSource)
     private readonly source: TypeOrmPlayerBehaviorSource &
       Partial<PlayerBehaviorSource>,
   ) {}
