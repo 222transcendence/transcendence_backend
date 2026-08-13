@@ -377,6 +377,131 @@ describe('AcidRainService', () => {
     });
   });
 
+  describe('spawn volume scales with participant count (#100)', () => {
+    let uniqueWordCounter = 0;
+    beforeEach(() => {
+      uniqueWordCounter = 0;
+      mockWordDictionaryService.pickWord.mockImplementation(() => ({
+        text: `단어${uniqueWordCounter++}`,
+        keystrokes: 6,
+      }));
+    });
+
+    // missLoopTimer가 낙하 시간(fallDurationMs≈5.5s)이 지난 단어를 MISSED로 치워버리면
+    // 활성 단어 수가 한도까지 쌓이는지 관찰할 수 없다 — 스폰 로직만 격리해서 본다.
+    function stopMissLoop(): void {
+      const session = service.getSession(ROOM_ID)!;
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+    }
+
+    it('caps concurrent active words at 5 per participant (2 players → 10)', async () => {
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT]);
+      stopMissLoop();
+      // 스폰 간격은 초반 2000ms에서 시작해 서서히 짧아진다 — 한도(10)까지 넉넉히 흘려보낸다
+      for (let i = 0; i < 24; i++) {
+        await jest.advanceTimersByTimeAsync(2500);
+      }
+
+      const session = service.getSession(ROOM_ID)!;
+      expect(session.maxActiveWords).toBe(10);
+      expect(session.activeWords.size).toBeLessThanOrEqual(10);
+      expect(session.activeWords.size).toBe(10);
+    });
+
+    it('caps concurrent active words at 5 per participant (4 players → 20)', async () => {
+      const P3 = {
+        participantId: 'player-3',
+        userId: 'player-3',
+        nickname: 'p3',
+        type: 'HUMAN' as const,
+      };
+      const P4 = {
+        participantId: 'player-4',
+        userId: 'player-4',
+        nickname: 'p4',
+        type: 'HUMAN' as const,
+      };
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT, P3, P4]);
+      stopMissLoop();
+      for (let i = 0; i < 36; i++) {
+        await jest.advanceTimersByTimeAsync(2500);
+      }
+
+      const session = service.getSession(ROOM_ID)!;
+      expect(session.maxActiveWords).toBe(20);
+      expect(session.activeWords.size).toBe(20);
+    });
+  });
+
+  describe('lane assignment avoids adjacent lanes when possible (#100)', () => {
+    let uniqueWordCounter = 0;
+    beforeEach(() => {
+      uniqueWordCounter = 0;
+      mockWordDictionaryService.pickWord.mockImplementation(() => ({
+        text: `단어${uniqueWordCounter++}`,
+        keystrokes: 6,
+      }));
+    });
+
+    function stopMissLoop(): void {
+      const session = service.getSession(ROOM_ID)!;
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+    }
+
+    it('never places two simultaneously-empty-lane spawns in adjacent lanes while non-adjacent lanes remain free', async () => {
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT]);
+      stopMissLoop();
+      // 큰 덩어리 하나로 advanceTimersByTimeAsync를 호출하면 재귀 setTimeout 체인이 한 번에
+      // 다 안 풀리는 fake timer 특성이 있어, 작은 단위로 나눠 흘려보낸다. 5레인 중 3개까지만
+      // 채워서 인접 회피가 항상 가능한 범위에서 검증한다(4번째부터는 회피할 빈 레인이 없어
+      // 인접 배치로 폴백하는 게 정상 동작 — 별도 테스트로 커버).
+      for (let i = 0; i < 3; i++) {
+        await jest.advanceTimersByTimeAsync(2500);
+      }
+
+      const session = service.getSession(ROOM_ID)!;
+      const lanes = Array.from(session.activeWords.values())
+        .map((w) => w.lane)
+        .sort((a, b) => a - b);
+      expect(lanes.length).toBeGreaterThanOrEqual(2);
+      for (let i = 1; i < lanes.length; i++) {
+        expect(lanes[i] - lanes[i - 1]).toBeGreaterThanOrEqual(2);
+      }
+    });
+
+    it('falls back to an adjacent lane once no non-adjacent empty lane remains', async () => {
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT]);
+      stopMissLoop();
+      for (let i = 0; i < 8; i++) {
+        await jest.advanceTimersByTimeAsync(2500);
+      }
+
+      const session = service.getSession(ROOM_ID)!;
+      const laneSet = new Set(
+        Array.from(session.activeWords.values()).map((w) => w.lane),
+      );
+      // 5레인을 다 채우고도 더 스폰됐다면(#100 인원수 비례 단어량) 반드시 어딘가는
+      // 인접 배치될 수밖에 없다.
+      expect(laneSet.size).toBe(5);
+    });
+
+    it('reuses lanes (stacks multiple words per lane) once active word count exceeds LANE_COUNT', async () => {
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT]);
+      stopMissLoop();
+      for (let i = 0; i < 24; i++) {
+        await jest.advanceTimersByTimeAsync(2500);
+      }
+
+      const session = service.getSession(ROOM_ID)!;
+      // maxActiveWords(10) > LANE_COUNT(5)이므로 어떤 레인은 반드시 2개 이상을 담아야 한다
+      const laneCounts = new Map<number, number>();
+      for (const w of session.activeWords.values()) {
+        laneCounts.set(w.lane, (laneCounts.get(w.lane) ?? 0) + 1);
+      }
+      expect(Math.max(...laneCounts.values())).toBeGreaterThanOrEqual(2);
+    });
+  });
+
   describe('participant contract', () => {
     it('can represent an AI participant without a fake User row', () => {
       const aiParticipant: ParticipantPublic = {
@@ -419,7 +544,7 @@ describe('AcidRainService', () => {
       });
     });
 
-    it('skips a spawn tick when five ACTIVE words already exist', async () => {
+    it('skips a spawn tick when maxActiveWords ACTIVE words already exist', async () => {
       await startParticipants([
         {
           participantId: HOST.userId,
@@ -434,13 +559,18 @@ describe('AcidRainService', () => {
           type: 'HUMAN',
         },
       ]);
-      for (let i = 0; i < 5; i++) addActiveWord(ROOM_ID, `w-${i}`, `word-${i}`);
+      const session = service.getSession(ROOM_ID)!;
+      // #100: 상한이 인원수 비례(maxActiveWords)로 바뀌었으므로 고정 5가 아니라
+      // 그 값만큼 채워야 한다(2인 매치 기준 10).
+      for (let i = 0; i < session.maxActiveWords; i++) {
+        addActiveWord(ROOM_ID, `w-${i}`, `word-${i}`);
+      }
       emitSpy.mockClear();
 
       await jest.advanceTimersByTimeAsync(2000);
 
       expect(eventsNamed('word_spawn')).toHaveLength(0);
-      expect(service.getSession(ROOM_ID)!.activeWords.size).toBe(5);
+      expect(session.activeWords.size).toBe(session.maxActiveWords);
     });
 
     it('adds at most one word when four ACTIVE words exist', async () => {

@@ -5,6 +5,7 @@ export interface LobbyClient {
   ws: WebSocket;
   userId: string;
   nickname: string;
+  avatar?: string;
   roomId?: string;
 }
 
