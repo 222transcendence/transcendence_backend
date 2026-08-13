@@ -113,7 +113,7 @@ export class PerformanceService {
         const completionTimes = pAttempts
           .filter(a => a.firstTypingAt && a.submitReceivedAt)
           .map(a => a.submitReceivedAt!.getTime() - a.firstTypingAt!.getTime())
-          .filter(t => t > 0);
+          .filter(t => t > 0 && t < 30_000);
 
         const avgReactionTimeMs = reactionTimes.length > 0
           ? reactionTimes.reduce((s, t) => s + t, 0) / reactionTimes.length
@@ -125,11 +125,13 @@ export class PerformanceService {
           ? completionTimes.reduce((s, t) => s + t, 0) / completionTimes.length
           : null;
 
-        const durationSec = session.status === 'FINISHED'
-          ? Math.round((Date.now() - session.startedAt) / 1000)
+        // Measure only active word-entry time. Match duration includes spawn,
+        // miss, countdown, and idle periods and substantially understates WPM.
+        const activeTypingDurationMs = completionTimes.length > 0
+          ? completionTimes.reduce((s, t) => s + t, 0)
           : null;
-        const typingWpm = durationSec && durationSec > 0 && correctWords > 0
-          ? (correctWords / durationSec) * 60
+        const typingWpm = activeTypingDurationMs && correctWords > 0
+          ? (correctWords / activeTypingDurationMs) * 60_000
           : null;
 
         await this.performanceRepo.save(
@@ -153,7 +155,7 @@ export class PerformanceService {
             medianReactionTimeMs,
             avgCompletionTimeMs,
             sampleCount: correctWords + wrongAttempts,
-            typingDurationMs: durationSec ? durationSec * 1000 : null,
+            typingDurationMs: activeTypingDurationMs,
           }),
         );
       }

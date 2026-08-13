@@ -173,6 +173,8 @@ describe('PerformanceService', () => {
       expect(p1Record).toBeDefined();
       expect(p1Record.correctWords).toBe(1);
       expect(p1Record.missedWords).toBe(1);
+      expect(p1Record.typingDurationMs).toBe(3000);
+      expect(p1Record.typingWpm).toBe(20);
     });
 
     it('HUMAN 참가자만 집계한다 (AI 제외 확인)', async () => {
