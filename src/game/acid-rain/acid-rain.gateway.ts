@@ -373,6 +373,11 @@ export class AcidRainGateway
       `spectate_room joined + state_sync sent: room=${roomId} user=${userId}`,
     );
     client.emit('state_sync', snapshot);
+    const aiMonitorSnapshot =
+      this.acidRainService.getLatestAiMonitorSnapshot?.(roomId);
+    if (aiMonitorSnapshot) {
+      client.emit('ai_monitor_snapshot', aiMonitorSnapshot);
+    }
     this.chatGateway
       .sendSystemMessage(
         roomId,

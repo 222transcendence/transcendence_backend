@@ -42,6 +42,7 @@ import {
   WordMissedEventPayload,
   WordSpawnPayload,
   WordResolutionState,
+  AiMonitorSnapshot,
 } from './acid-rain.interface';
 import { WordDictionaryService } from '../../word-dictionary/word-dictionary.service';
 import { PerformanceService } from './performance.service';
@@ -222,11 +223,23 @@ export class AcidRainService implements OnModuleInit {
         modelPlayerId: modelPlayer!.userId!,
         difficulty: aiParticipant!.aiDifficulty!,
         submitWord: (input) => this.submitWord(input, server),
-        emitTypingProgress: (participantId, partialText) => {
-          server.to(`game:${roomId}`).emit('opponent_typing', {
-            participantId,
-            partialText,
-          });
+        emitTypingProgress: (payload) => {
+          server.to(`game:${roomId}`).emit('opponent_typing', payload);
+        },
+        emitMonitorSnapshot: (payload) => {
+          const currentSession = this.sessions.get(roomId);
+          if (
+            currentSession !== session ||
+            currentSession.status === 'FINISHED' ||
+            payload.roomId !== roomId ||
+            payload.participantId !==
+              currentSession.participants.find(
+                (participant) => participant.type === 'AI',
+              )?.participantId
+          ) {
+            return;
+          }
+          server.to(`game:${roomId}`).emit('ai_monitor_snapshot', payload);
         },
       });
     }
@@ -804,6 +817,28 @@ export class AcidRainService implements OnModuleInit {
     server.to(`game:${roomId}`).emit('opponent_reconnected', { userId });
 
     clientSocket.emit('state_sync', this.buildStateSyncPayload(session));
+    this.emitLatestAiMonitorSnapshot(session.roomId, clientSocket);
+  }
+
+  getLatestAiMonitorSnapshot(roomId: string): AiMonitorSnapshot | undefined {
+    const session = this.sessions.get(roomId);
+    if (
+      !session ||
+      session.status === 'FINISHED' ||
+      session.mode !== 'AI_PRACTICE'
+    ) {
+      return undefined;
+    }
+    const snapshot = this.aiScheduler.getLatestMonitorSnapshot?.(roomId);
+    return snapshot?.roomId === roomId ? snapshot : undefined;
+  }
+
+  private emitLatestAiMonitorSnapshot(
+    roomId: string,
+    socket: import('socket.io').Socket,
+  ): void {
+    const snapshot = this.getLatestAiMonitorSnapshot(roomId);
+    if (snapshot) socket.emit('ai_monitor_snapshot', snapshot);
   }
 
   /**
@@ -937,6 +972,10 @@ export class AcidRainService implements OnModuleInit {
       this.matchFinalizations.set(roomId, finalization);
     }
 
+    // The terminal patch is emitted while the session identity is still valid.
+    // invalidate/destroy afterwards makes this ordering idempotent and closes
+    // every late timer/profile callback.
+    this.aiScheduler.emitTerminal?.(roomId);
     this.aiScheduler.invalidate(roomId);
     session.status = 'FINISHED';
 

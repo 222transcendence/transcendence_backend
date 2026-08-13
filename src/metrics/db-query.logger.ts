@@ -31,3 +31,22 @@ export class DbQueryLogger implements Logger {
     }
   }
 }
+
+/** Report-only logger: suppresses successful query parameters but keeps redacted errors. */
+export class PopulationDefaultReportLogger implements Logger {
+  logQuery() {}
+
+  logQueryError(error: string | Error, query: string) {
+    console.error(`[population-default] query failed: ${query}`, error);
+  }
+
+  logQuerySlow(time: number) {
+    dbQueryDuration.observe(time / 1000);
+  }
+
+  logSchemaBuild() {}
+
+  logMigration() {}
+
+  log() {}
+}

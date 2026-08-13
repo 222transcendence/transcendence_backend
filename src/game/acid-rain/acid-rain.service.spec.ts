@@ -75,6 +75,7 @@ describe('AcidRainService', () => {
   let service: AcidRainService;
   let redisStore: Record<string, string>;
   let emitSpy: jest.Mock<void, [string, unknown]>;
+  let serverToSpy: jest.Mock;
   let server: Server;
   let randomMock: jest.Mock<number, []>;
   let mockAiScheduler: {
@@ -82,6 +83,8 @@ describe('AcidRainService', () => {
     onStateChange: jest.Mock;
     invalidate: jest.Mock;
     destroy: jest.Mock;
+    getLatestMonitorSnapshot: jest.Mock;
+    emitTerminal: jest.Mock;
   };
 
   const HOST = { userId: 'host-id', nickname: 'hostNick' };
@@ -271,9 +274,11 @@ describe('AcidRainService', () => {
       onStateChange: jest.fn(),
       invalidate: jest.fn(),
       destroy: jest.fn(),
+      getLatestMonitorSnapshot: jest.fn(),
+      emitTerminal: jest.fn(),
     };
-    const toSpy = jest.fn().mockReturnValue({ emit: emitSpy });
-    server = { to: toSpy } as unknown as Server;
+    serverToSpy = jest.fn().mockReturnValue({ emit: emitSpy });
+    server = { to: serverToSpy } as unknown as Server;
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -1999,6 +2004,70 @@ describe('AcidRainService', () => {
       expect(activeWord).not.toHaveProperty('tier');
     });
 
+    it('sends the latest materialized FULL monitor snapshot only to the reconnecting socket', async () => {
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:room-1',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+      mockAiScheduler.getLatestMonitorSnapshot.mockReturnValue({
+        roomId: ROOM_ID,
+        participantId: 'ai:room-1',
+        stateVersion: 4,
+        timestamp: new Date().toISOString(),
+        kind: 'FULL',
+        currentDecision: {
+          action: 'SELECT',
+          phase: 'REACTION',
+          targetWordId: 'word-1',
+          previousTargetWordId: null,
+        },
+        profile: {
+          wpm: 45,
+          accuracy: 0.92,
+          reactionTimeMs: 650,
+          sampleCount: 0,
+          confidence: 0,
+          source: null,
+        },
+        executionProfile: {
+          difficulty: 'NORMAL',
+          typingWpm: 45,
+          accuracy: 0.92,
+          reactionDelayMs: 650,
+          typoProbability: 0.08,
+          correctionDelayMs: 150,
+          abandonProbability: 0.06,
+        },
+        candidates: [],
+        completedKeystrokes: 0,
+        totalKeystrokes: 3,
+      });
+      const clientEmit = jest.fn<void, [string, unknown]>();
+      service.handleReconnect(ROOM_ID, HOST.userId, server, {
+        emit: clientEmit,
+      } as unknown as Socket);
+
+      expect(clientEmit).toHaveBeenNthCalledWith(
+        2,
+        'ai_monitor_snapshot',
+        expect.objectContaining({ roomId: ROOM_ID, kind: 'FULL' }),
+      );
+      expect(eventsNamed('ai_monitor_snapshot')).toHaveLength(0);
+    });
+
     const fourPlayers: ParticipantPublic[] = [
       {
         participantId: HOST.userId,
@@ -2434,18 +2503,22 @@ describe('AcidRainService', () => {
     it('provides an outbound opponent_typing callback without exposing wordId', async () => {
       let registration:
         | {
-            emitTypingProgress: (
-              participantId: string,
-              partialText: string,
-            ) => void;
+            emitTypingProgress: (payload: {
+              participantId: string;
+              partialText: string;
+              wordId?: string;
+              phase?: string;
+            }) => void;
           }
         | undefined;
       mockAiScheduler.registerRoom.mockImplementation((value: unknown) => {
         registration = value as {
-          emitTypingProgress: (
-            participantId: string,
-            partialText: string,
-          ) => void;
+          emitTypingProgress: (payload: {
+            participantId: string;
+            partialText: string;
+            wordId?: string;
+            phase?: string;
+          }) => void;
         };
       });
       await startParticipants(
@@ -2466,13 +2539,75 @@ describe('AcidRainService', () => {
         'AI_PRACTICE',
       );
 
-      registration!.emitTypingProgress('ai:room-1', '가');
+      registration!.emitTypingProgress({
+        participantId: 'ai:room-1',
+        partialText: '가',
+        wordId: 'private-word',
+        phase: 'TYPING',
+      });
 
       expect(emitSpy).toHaveBeenCalledWith('opponent_typing', {
         participantId: 'ai:room-1',
         partialText: '가',
+        wordId: 'private-word',
+        phase: 'TYPING',
       });
-      expect(emitSpy.mock.calls.at(-1)?.[1]).not.toHaveProperty('wordId');
+      expect(emitSpy.mock.calls.at(-1)?.[1]).toHaveProperty(
+        'wordId',
+        'private-word',
+      );
+    });
+
+    it('broadcasts monitor patches only through the current game room and orders terminal before invalidate', async () => {
+      let registration:
+        | {
+            emitMonitorSnapshot: (payload: {
+              roomId: string;
+              participantId: string;
+              stateVersion: number;
+              timestamp: string;
+              kind: 'FULL' | 'PHASE' | 'TERMINAL' | 'DECISION';
+            }) => void;
+          }
+        | undefined;
+      mockAiScheduler.registerRoom.mockImplementation((value: unknown) => {
+        registration = value as typeof registration;
+      });
+      await startParticipants(
+        [
+          {
+            participantId: HOST.userId,
+            userId: HOST.userId,
+            nickname: HOST.nickname,
+            type: 'HUMAN',
+          },
+          {
+            participantId: 'ai:room-1',
+            nickname: 'ACID BOT',
+            type: 'AI',
+            aiDifficulty: 'NORMAL',
+          },
+        ],
+        'AI_PRACTICE',
+      );
+
+      registration!.emitMonitorSnapshot({
+        roomId: ROOM_ID,
+        participantId: 'ai:room-1',
+        stateVersion: 1,
+        timestamp: new Date().toISOString(),
+        kind: 'PHASE',
+      });
+      expect(serverToSpy).toHaveBeenCalledWith(`game:${ROOM_ID}`);
+      expect(emitSpy).toHaveBeenCalledWith(
+        'ai_monitor_snapshot',
+        expect.objectContaining({ roomId: ROOM_ID, kind: 'PHASE' }),
+      );
+
+      await service.endMatch(ROOM_ID, 'FORFEIT', server);
+      expect(
+        mockAiScheduler.emitTerminal.mock.invocationCallOrder[0],
+      ).toBeLessThan(mockAiScheduler.invalidate.mock.invocationCallOrder[0]);
     });
 
     it('registers and cleans the AI scheduler through finalizeMatch', async () => {

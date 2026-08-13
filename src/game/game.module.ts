@@ -12,6 +12,7 @@ import { GameService } from './game.service';
 import { AiPracticeService } from './ai-practice.service';
 import { PerformanceService } from './acid-rain/performance.service';
 import { TypeOrmPlayerPerformanceSource } from './player-performance-source';
+import { TypeOrmPlayerBehaviorSource } from './player-behavior-source';
 
 @Module({
   imports: [
@@ -31,6 +32,7 @@ import { TypeOrmPlayerPerformanceSource } from './player-performance-source';
     AiPracticeService,
     PerformanceService,
     TypeOrmPlayerPerformanceSource,
+    TypeOrmPlayerBehaviorSource,
   ],
   exports: [
     TypeOrmModule,
@@ -38,6 +40,7 @@ import { TypeOrmPlayerPerformanceSource } from './player-performance-source';
     AiPracticeService,
     PerformanceService,
     TypeOrmPlayerPerformanceSource,
+    TypeOrmPlayerBehaviorSource,
   ],
 })
 export class GameModule {}

@@ -1,10 +1,12 @@
 import type {
   JudgeWordSubmitInput,
   JudgeWordSubmitResult,
+  OpponentTypingEventPayload,
 } from '../acid-rain.interface';
 import { AiExecutor } from './ai-executor';
 import { AiScheduler } from './ai-scheduler';
 import type { Clock, RandomSource, Timer } from './ai-execution.types';
+import { DEFAULT_PLAYER_SKILL } from '../../player-model';
 
 function accepted(input: JudgeWordSubmitInput): JudgeWordSubmitResult {
   return {
@@ -31,7 +33,7 @@ function accepted(input: JudgeWordSubmitInput): JudgeWordSubmitResult {
   };
 }
 
-function setup() {
+function setup(monitorEmitter?: (payload: unknown) => void) {
   let now = 0;
   const callbacks: Array<() => void> = [];
   const delays: number[] = [];
@@ -50,7 +52,8 @@ function setup() {
   const random: RandomSource = { next: () => 1 };
   const executor = new AiExecutor(clock, random);
   const submitted: JudgeWordSubmitInput[] = [];
-  const progress: Array<{ participantId: string; partialText: string }> = [];
+  const progress: OpponentTypingEventPayload[] = [];
+  const monitor: Array<Record<string, unknown>> = [];
   const scheduler = new AiScheduler(
     executor,
     undefined,
@@ -68,8 +71,12 @@ function setup() {
       submitted.push(input);
       return Promise.resolve(accepted(input));
     },
-    emitTypingProgress: (participantId, partialText) => {
-      progress.push({ participantId, partialText });
+    emitTypingProgress: (payload) => {
+      progress.push(payload);
+    },
+    emitMonitorSnapshot: (payload) => {
+      if (monitorEmitter) monitorEmitter(payload);
+      else monitor.push(payload);
     },
   });
   return {
@@ -82,6 +89,7 @@ function setup() {
     },
     setNow: (value: number) => (now = value),
     progress,
+    monitor,
   };
 }
 
@@ -94,7 +102,7 @@ const word = {
 };
 
 describe('AiScheduler lifecycle and race guards', () => {
-  it('does not emit progress during reaction and suppresses duplicate partial text', async () => {
+  it('emits sparse monitor patches and retains a materialized FULL snapshot', () => {
     const test = setup();
     test.scheduler.onStateChange({
       roomId: 'room',
@@ -103,14 +111,193 @@ describe('AiScheduler lifecycle and race guards', () => {
       status: 'IN_PROGRESS',
       event: 'SPAWN',
     });
-    expect(test.progress).toHaveLength(0);
+
+    expect(test.monitor[0]).toMatchObject({
+      kind: 'FULL',
+      profile: { sampleCount: 0, source: 'DEFAULT' },
+      executionProfile: { difficulty: 'NORMAL' },
+      candidates: [{ wordId: 'w1', eligible: true, selected: true }],
+    });
+    expect(test.monitor[1]).toMatchObject({
+      kind: 'PHASE',
+      currentDecision: { phase: 'REACTION' },
+    });
+    expect(test.monitor[1]).not.toHaveProperty('profile');
+    expect(test.monitor[1]).not.toHaveProperty('candidates');
+
+    const latest = test.scheduler.getLatestMonitorSnapshot('room');
+    expect(latest).toMatchObject({
+      kind: 'FULL',
+      profile: { source: 'DEFAULT' },
+      candidates: [{ wordId: 'w1' }],
+    });
+    expect(latest?.stateVersion).toBe(2);
+  });
+
+  it('emits TERMINAL once before invalidate and does not emit after destroy', () => {
+    const test = setup();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    test.scheduler.emitTerminal('room');
+    test.scheduler.emitTerminal('room');
+    test.scheduler.invalidate('room');
+    test.scheduler.destroy('room');
+
+    expect(
+      test.monitor.filter((event) => event.kind === 'TERMINAL'),
+    ).toHaveLength(1);
+    expect(test.monitor.at(-1)).toMatchObject({ kind: 'TERMINAL' });
+  });
+
+  it('ignores a profile Promise completed after TERMINAL', async () => {
+    let resolveProfile!: (profile: typeof DEFAULT_PLAYER_SKILL) => void;
+    const monitor: Array<Record<string, unknown>> = [];
+    const scheduler = new AiScheduler(
+      new AiExecutor({ now: () => 0 }, { next: () => 1 }),
+      {
+        getSkillProfile: () => ({ ...DEFAULT_PLAYER_SKILL }),
+        loadSkillProfile: () =>
+          new Promise((resolve) => {
+            resolveProfile = resolve;
+          }),
+      },
+      undefined,
+      { now: () => 0 },
+      {
+        setTimeout: jest.fn(
+          () => 1 as unknown as ReturnType<typeof setTimeout>,
+        ),
+        clearTimeout: jest.fn(),
+      },
+    );
+    scheduler.registerRoom({
+      roomId: 'room',
+      aiParticipantId: 'ai:room',
+      modelPlayerId: 'human',
+      difficulty: 'NORMAL',
+      submitWord: (input) => Promise.resolve(accepted(input)),
+      emitTypingProgress: jest.fn(),
+      emitMonitorSnapshot: (payload) => monitor.push(payload),
+    });
+    scheduler.emitTerminal('room');
+    scheduler.invalidate('room');
+    resolveProfile({ ...DEFAULT_PLAYER_SKILL, wpm: 90 });
+    await Promise.resolve();
+
+    expect(monitor.filter((event) => event.kind === 'TERMINAL')).toHaveLength(
+      1,
+    );
+    expect(monitor).toHaveLength(1);
+  });
+
+  it('keeps runtime typo probability and marks evaluator-excluded words ineligible', () => {
+    const monitor: Array<Record<string, unknown>> = [];
+    const profileProvider = {
+      getSkillProfile: jest.fn(() => ({
+        wpm: 45,
+        accuracy: 0.5,
+        reactionTimeMs: 650,
+        sampleCount: 1,
+        confidence: 1,
+      })),
+    };
+    const scheduler = new AiScheduler(
+      new AiExecutor({ now: () => 0 }, { next: () => 1 }),
+      profileProvider,
+      undefined,
+      { now: () => 0 },
+      {
+        setTimeout: jest.fn(
+          () => 1 as unknown as ReturnType<typeof setTimeout>,
+        ),
+        clearTimeout: jest.fn(),
+      },
+    );
+    scheduler.registerRoom({
+      roomId: 'room',
+      aiParticipantId: 'ai:room',
+      modelPlayerId: 'human',
+      difficulty: 'NORMAL',
+      submitWord: (input) => Promise.resolve(accepted(input)),
+      emitTypingProgress: jest.fn(),
+      emitMonitorSnapshot: (payload) => monitor.push(payload),
+    });
+    scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [
+        { ...word, wordId: 'expired', landAtMs: 1 },
+        { ...word, wordId: 'eligible', landAtMs: 10000 },
+      ],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+
+    expect(monitor[0]).toMatchObject({
+      executionProfile: { typoProbability: 0.18 },
+      candidates: [
+        { wordId: 'expired', eligible: false, utility: null },
+        { wordId: 'eligible', eligible: true },
+      ],
+    });
+  });
+
+  it('does not reuse a previous room snapshot and isolates callback failure from submit', async () => {
+    const first = setup();
+    first.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    first.scheduler.destroy('room');
+
+    const second = setup(() => {
+      throw new Error('monitor down');
+    });
+    expect(second.scheduler.getLatestMonitorSnapshot('room')).toBeUndefined();
+    second.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    second.runTimers();
+    await Promise.resolve();
+    expect(second.submitted).toHaveLength(1);
+  });
+
+  it('emits reaction and typing phases with monotonic progress', async () => {
+    const test = setup();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    expect(test.progress[0]).toMatchObject({
+      phase: 'REACTION',
+      partialText: '',
+    });
     test.runTimers();
     await Promise.resolve();
     expect(test.progress.map((event) => event.partialText)).toEqual([
+      '',
       'a',
       'ab',
       'abc',
       '',
+    ]);
+    expect(test.progress.map((event) => event.stateVersion)).toEqual([
+      1, 2, 3, 4, 5,
     ]);
   });
 
@@ -127,7 +314,10 @@ describe('AiScheduler lifecycle and race guards', () => {
     test.runTimers();
     await Promise.resolve();
     expect(test.progress.map((event) => event.partialText)).toEqual([
+      '',
+      'ㄱ',
       '가',
+      '간',
       '가나',
       '',
     ]);
@@ -152,9 +342,9 @@ describe('AiScheduler lifecycle and race guards', () => {
       status: 'IN_PROGRESS',
       event: 'SPAWN',
     });
-    expect(test.progress.slice(beforeSwitch)).toEqual([
-      { participantId: 'ai:room', partialText: '' },
-    ]);
+    expect(
+      test.progress.slice(beforeSwitch).map((event) => event.phase),
+    ).toEqual(['IDLE', 'REACTION']);
     expect(test.scheduler.getTask('room')?.wordId).toBe('w2');
   });
 
@@ -178,7 +368,7 @@ describe('AiScheduler lifecycle and race guards', () => {
     });
     expect(test.scheduler.getTask('room')).toBe(task);
     expect(test.scheduler.getTask('room')?.timer).toBe(timer);
-    expect(test.progress).toHaveLength(0);
+    expect(test.progress).toHaveLength(1);
   });
 
   it('clears the current target exactly once when it disappears', () => {
@@ -199,9 +389,13 @@ describe('AiScheduler lifecycle and race guards', () => {
       status: 'IN_PROGRESS',
       event: 'CLEAR',
     });
-    expect(test.progress.slice(beforeClear)).toEqual([
-      { participantId: 'ai:room', partialText: '' },
-    ]);
+    expect(
+      test.progress.slice(beforeClear).map((event) => event.phase),
+    ).toEqual(['IDLE']);
+    expect(test.monitor.at(-1)).toMatchObject({
+      kind: 'DECISION',
+      currentDecision: { previousTargetWordId: 'w1' },
+    });
     expect(test.scheduler.getTask('room')).toBeUndefined();
   });
 
@@ -228,8 +422,8 @@ describe('AiScheduler lifecycle and race guards', () => {
       modelPlayerId: 'human-1',
       difficulty: 'NORMAL',
       submitWord: submit,
-      emitTypingProgress: (participantId, partialText) => {
-        test.progress.push({ participantId, partialText });
+      emitTypingProgress: (payload) => {
+        test.progress.push(payload);
       },
     });
     test.scheduler.onStateChange({

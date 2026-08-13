@@ -121,7 +121,98 @@ export interface WordTypingState {
 export interface OpponentTypingEventPayload {
   participantId: string;
   partialText: string;
+  wordId?: string;
+  completedKeystrokes?: number;
+  totalKeystrokes?: number;
+  phase?: OpponentTypingPhase;
+  stateVersion?: number;
 }
+
+export type OpponentTypingPhase = 'IDLE' | 'REACTION' | 'TYPING' | 'CORRECTING';
+
+export type AiMonitorSnapshotKind = 'FULL' | 'DECISION' | 'PHASE' | 'TERMINAL';
+
+export type AiMonitorDecisionAction =
+  | 'KEEP'
+  | 'SWITCH'
+  | 'ABANDON'
+  | 'SELECT'
+  | 'NO_TARGET';
+
+export interface AiMonitorDecision {
+  action: AiMonitorDecisionAction;
+  phase: OpponentTypingPhase;
+  targetWordId: string | null;
+  previousTargetWordId: string | null;
+}
+
+export interface AiMonitorPlayerProfile {
+  wpm: number;
+  accuracy: number;
+  reactionTimeMs: number;
+  sampleCount: number;
+  confidence: number;
+  source: 'DEFAULT' | 'BLENDED' | 'PERSONALIZED' | null;
+  profileVersion?: string | null;
+  populationDefaultVersion?: string | null;
+  fallbackReason?:
+    | 'NO_USER'
+    | 'NO_PERSONAL_SAMPLES'
+    | 'NONE'
+    | 'PROFILE_SOURCE_ERROR';
+  metricConfidence?: Record<
+    string,
+    {
+      sampleCount: number;
+      confidence: number;
+      available: boolean;
+    }
+  >;
+}
+
+export interface AiMonitorExecutionProfile {
+  difficulty: AiDifficulty;
+  typingWpm: number;
+  accuracy: number;
+  reactionDelayMs: number;
+  typoProbability: number;
+  correctionDelayMs: number;
+  abandonProbability: number;
+}
+
+export interface AiMonitorCandidate {
+  wordId: string;
+  utility: number | null;
+  successProbability: number | null;
+  urgency: number | null;
+  completionMs: number | null;
+  opportunityCost: number | null;
+  remainingMs: number;
+  eligible: boolean;
+  selected: boolean;
+}
+
+export interface AiMonitorSnapshot {
+  roomId: string;
+  participantId: string;
+  stateVersion: number;
+  timestamp: string;
+  kind: AiMonitorSnapshotKind;
+  currentDecision: AiMonitorDecision;
+  profile: AiMonitorPlayerProfile;
+  executionProfile: AiMonitorExecutionProfile;
+  candidates: AiMonitorCandidate[];
+  completedKeystrokes: number;
+  totalKeystrokes: number;
+}
+
+export type AiMonitorSnapshotPatch = Partial<AiMonitorSnapshot> & {
+  roomId: string;
+  participantId: string;
+  stateVersion: number;
+  timestamp: string;
+  kind: AiMonitorSnapshotKind;
+};
 
 export interface JoinRoomPayload {
   roomId: string;
