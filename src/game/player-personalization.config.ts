@@ -1,6 +1,7 @@
 export const PLAYER_PERSONALIZATION_CONFIG = Object.freeze({
   version: 'player-personalization-v1',
-  populationDefaultVersion: null as string | null,
+  populationDefaultVersion:
+    'population-default-developer-baseline-v1' as string | null,
   personalSampleLimit: 20,
   priorSampleCount: 4,
   personalizedSampleThreshold: 10,

@@ -242,7 +242,7 @@ describe('player model', () => {
     expect(() => {
       (DEFAULT_PLAYER_SKILL as PlayerSkillProfile).wpm = 999;
     }).toThrow(TypeError);
-    expect(DEFAULT_PLAYER_SKILL.wpm).toBe(45);
+    expect(DEFAULT_PLAYER_SKILL.wpm).toBe(22.051948051948052);
   });
 
   it('is deterministic for identical input', () => {
