@@ -363,10 +363,22 @@ export class LobbyGateway implements OnModuleInit {
 
       case 'LEAVE_ROOM': {
         const { roomId } = payload as { roomId: string };
-        this.chatGateway.sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`).catch((err) => this.logger.error(`System message failed: ${String(err)}`));
-        const updatedRoom = await this.gameService.leaveRoom(roomId, client.userId);
+        const beforeRoom = await this.gameService.getRoom(roomId);
+        const wasHost = beforeRoom?.hostUserId === client.userId;
+        this.chatGateway
+          .sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`)
+          .catch((err) =>
+            this.logger.error(`System message failed: ${String(err)}`),
+          );
+        const updatedRoom = await this.gameService.leaveRoom(
+          roomId,
+          client.userId,
+        );
         client.roomId = undefined;
         if (updatedRoom) {
+          if (wasHost && updatedRoom.hostUserId !== client.userId) {
+            this.announceHostChange(roomId, updatedRoom);
+          }
           this.lobbyService.broadcast('ROOM_UPDATED', {
             room: toLobbyRoom(updatedRoom),
           });

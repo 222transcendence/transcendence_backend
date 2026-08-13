@@ -479,3 +479,139 @@ describe('LobbyGateway SET_READY → GAME_START (#153)', () => {
     );
   });
 });
+
+describe('LobbyGateway host change announcement', () => {
+  let gateway: LobbyGateway;
+  let gameService: {
+    leaveRoom: jest.Mock;
+    getRoom: jest.Mock;
+    getWaitingRooms: jest.Mock;
+  };
+  let lobbyService: {
+    broadcast: jest.Mock<void, [string, unknown]>;
+  };
+  let chatGateway: { sendSystemMessage: jest.Mock };
+  let client: LobbyClient;
+
+  const roomWithHost = (hostUserId: string) => ({
+    id: 'room-1',
+    hostUserId,
+    maxPlayers: 2,
+    players: [
+      { userId: 'user-1', nickname: 'host', ready: false },
+      { userId: 'user-2', nickname: 'guest', ready: false },
+    ],
+    status: 'WAITING',
+    createdAt: '2026-08-12T00:00:00.000Z',
+  });
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    gameService = {
+      leaveRoom: jest.fn(),
+      getRoom: jest.fn(),
+      getWaitingRooms: jest.fn().mockResolvedValue([]),
+    };
+    lobbyService = {
+      broadcast: jest.fn<void, [string, unknown]>(),
+    };
+    chatGateway = {
+      sendSystemMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    gateway = new LobbyGateway(
+      {} as JwtService,
+      {} as UserService,
+      gameService as unknown as GameService,
+      { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+      lobbyService as unknown as LobbyService,
+      chatGateway as unknown as ChatGateway,
+    );
+    client = {
+      ws: {} as LobbyClient['ws'],
+      userId: 'user-1',
+      nickname: 'host',
+    };
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  async function handle(type: string, payload?: unknown) {
+    const callable = gateway as unknown as {
+      handleMessage: (
+        client: LobbyClient,
+        msg: { type: string; payload?: unknown },
+      ) => Promise<void>;
+    };
+    await callable.handleMessage(client, { type, payload });
+  }
+
+  it('announces the new host when the host explicitly leaves via LEAVE_ROOM', async () => {
+    gameService.getRoom.mockResolvedValue(roomWithHost('user-1'));
+    gameService.leaveRoom.mockResolvedValue(roomWithHost('user-2'));
+
+    await handle('LEAVE_ROOM', { roomId: 'room-1' });
+
+    expect(chatGateway.sendSystemMessage).toHaveBeenCalledWith(
+      'room-1',
+      'guest 님이 호스트가 되었습니다.',
+    );
+  });
+
+  it('does not announce a host change when a non-host explicitly leaves', async () => {
+    client.userId = 'user-2';
+    client.nickname = 'guest';
+    gameService.getRoom.mockResolvedValue(roomWithHost('user-1'));
+    gameService.leaveRoom.mockResolvedValue(roomWithHost('user-1'));
+
+    await handle('LEAVE_ROOM', { roomId: 'room-1' });
+
+    expect(chatGateway.sendSystemMessage).not.toHaveBeenCalledWith(
+      'room-1',
+      expect.stringContaining('호스트가 되었습니다'),
+    );
+  });
+
+  it('announces the new host when the host disconnects and does not reconnect', async () => {
+    const lobbyServiceReal = new LobbyService();
+    gateway = new LobbyGateway(
+      {} as JwtService,
+      {} as UserService,
+      gameService as unknown as GameService,
+      { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+      lobbyServiceReal,
+      chatGateway as unknown as ChatGateway,
+    );
+    const handlers: Record<string, (...args: unknown[]) => void> = {};
+    const ws = {
+      on: (event: string, cb: (...args: unknown[]) => void) => {
+        handlers[event] = cb;
+      },
+      readyState: 1,
+      send: jest.fn(),
+    };
+    (
+      gateway as unknown as {
+        onConnection: (ws: unknown, userId: string, nickname: string) => void;
+      }
+    ).onConnection(ws, 'user-1', 'host');
+    const connectedClient = lobbyServiceReal.findClientByUserId('user-1');
+    if (!connectedClient) throw new Error('client not registered');
+    connectedClient.roomId = 'room-1';
+
+    gameService.getRoom.mockResolvedValue(roomWithHost('user-1'));
+    gameService.leaveRoom.mockResolvedValue(roomWithHost('user-2'));
+
+    handlers['close']();
+    jest.advanceTimersByTime(20000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(chatGateway.sendSystemMessage).toHaveBeenCalledWith(
+      'room-1',
+      'guest 님이 호스트가 되었습니다.',
+    );
+  });
+});
