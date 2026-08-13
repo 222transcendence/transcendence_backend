@@ -119,8 +119,8 @@ export class LobbyGateway implements OnModuleInit {
     this.wss = new WebSocketServer({ noServer: true });
     this.wss.on(
       'connection',
-      (ws: WebSocket, userId: string, nickname: string) => {
-        this.onConnection(ws, userId, nickname);
+      (ws: WebSocket, userId: string, nickname: string, avatar?: string) => {
+        this.onConnection(ws, userId, nickname, avatar);
       },
     );
   }
@@ -164,7 +164,7 @@ export class LobbyGateway implements OnModuleInit {
       .findOne(userId)
       .then((user) => {
         this.wss.handleUpgrade(request, socket, head, (ws) => {
-          this.wss.emit('connection', ws, userId, user.nickname);
+          this.wss.emit('connection', ws, userId, user.nickname, user.avatar);
         });
       })
       .catch(() => {
@@ -173,8 +173,8 @@ export class LobbyGateway implements OnModuleInit {
       });
   }
 
-  private onConnection(ws: WebSocket, userId: string, nickname: string): void {
-    const client: LobbyClient = { ws, userId, nickname };
+  private onConnection(ws: WebSocket, userId: string, nickname: string, avatar?: string): void {
+    const client: LobbyClient = { ws, userId, nickname, avatar };
     this.lobbyService.addClient(client);
     websocketConnections.inc({ namespace: 'lobby' });
 
