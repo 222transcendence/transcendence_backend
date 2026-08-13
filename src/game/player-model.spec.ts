@@ -60,9 +60,9 @@ describe('player model', () => {
 
     expect(result.sampleCount).toBe(1);
     expect(result.confidence).toBe(0.2);
-    expect(result.wpm).toBe(52);
-    expect(result.accuracy).toBe(0.928);
-    expect(result.reactionTimeMs).toBe(600);
+    expect(result.wpm).toBe(133);
+    expect(result.accuracy).toBe(0.98);
+    expect(result.reactionTimeMs).toBe(1083);
   });
 
   it('uses the arithmetic mean for multiple samples', () => {
@@ -72,9 +72,9 @@ describe('player model', () => {
     ]);
 
     expect(result.sampleCount).toBe(2);
-    expect(result.wpm).toBe(57);
-    expect(result.accuracy).toBe(0.9133);
-    expect(result.reactionTimeMs).toBe(667);
+    expect(result.wpm).toBe(124);
+    expect(result.accuracy).toBe(0.9667);
+    expect(result.reactionTimeMs).toBe(1069);
   });
 
   it('increases confidence and converges toward observations with more samples', () => {
@@ -217,7 +217,7 @@ describe('player model', () => {
         },
         'NORMAL',
       ),
-    ).toEqual({ typingWpm: 45, accuracy: 0.92, reactionDelayMs: 250 });
+    ).toEqual({ typingWpm: 140, accuracy: 0.98, reactionDelayMs: 250 });
   });
 
   it('keeps hard output imperfect and bounded', () => {
@@ -242,7 +242,7 @@ describe('player model', () => {
     expect(() => {
       (DEFAULT_PLAYER_SKILL as PlayerSkillProfile).wpm = 999;
     }).toThrow(TypeError);
-    expect(DEFAULT_PLAYER_SKILL.wpm).toBe(22.051948051948052);
+    expect(DEFAULT_PLAYER_SKILL.wpm).toBe(146.5776347325265);
   });
 
   it('is deterministic for identical input', () => {

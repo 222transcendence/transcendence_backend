@@ -9,9 +9,9 @@ export const GENERATED_POPULATION_DEFAULT_VERSION =
 
 export const GENERATED_POPULATION_DEFAULT: Readonly<PlayerSkillProfile> =
   Object.freeze({
-    wpm: 22.051948051948052,
+    wpm: 146.5776347325265,
     accuracy: 1,
-    reactionTimeMs: 1395.75,
+    reactionTimeMs: 1254.2386363636365,
     sampleCount: 0,
     confidence: 0,
   });
