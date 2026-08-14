@@ -890,6 +890,45 @@ describe('AcidRainService', () => {
       ]);
       expect(payload.winnerId).toBeNull();
     });
+
+    it('TIME_LIMIT ranks a mid-match forfeit below all survivors regardless of stale HP/wordsTyped (backend#185)', async () => {
+      await startParticipants([
+        ...threePlayers,
+        {
+          participantId: 'player-4',
+          userId: 'player-4',
+          nickname: 'player-4',
+          type: 'HUMAN',
+        },
+      ]);
+      const session = service.getSession(ROOM_ID)!;
+
+      // player-3 explicitly leaves mid-match — forfeited with high HP/wordsTyped
+      // frozen at the moment they left (mirrors leaveMatch/forfeitParticipant).
+      const forfeited = session.participants.find(
+        (participant) => participant.participantId === 'player-3',
+      )!;
+      forfeited.status = 'ELIMINATED';
+      forfeited.eliminationOrder = 1;
+      forfeited.hp = 90;
+      forfeited.wordsTyped = 20;
+      session.hpByParticipantId['player-3'] = 90;
+
+      setHp(session, HOST.userId, 40);
+      setHp(session, GUEST.userId, 10);
+      setHp(session, 'player-4', 30);
+
+      await service.endMatch(ROOM_ID, 'TIME_LIMIT', server);
+
+      const [payload] = eventsNamed<MatchEndPayload>('match_end');
+      expect(payload.ranking).toEqual([
+        { participantId: HOST.userId, rank: 1 },
+        { participantId: 'player-4', rank: 2 },
+        { participantId: GUEST.userId, rank: 3 },
+        { participantId: 'player-3', rank: 4 },
+      ]);
+      expect(payload.winnerId).toBe(HOST.userId);
+    });
   });
 
   describe('submitWord — damage formula (GAME_DESIGN.md §3.6)', () => {
