@@ -32,7 +32,8 @@ local existing = redis.call('GET', KEYS[1])
 if existing then
   local decoded, record = pcall(cjson.decode, existing)
   if decoded and record.difficulty == ARGV[5] then
-    local room = redis.call('GET', KEYS[2])
+    local existingRoomKey = 'game:ai-practice:room:' .. record.result.roomId
+    local room = redis.call('GET', existingRoomKey)
     local lock = redis.call('GET', KEYS[3])
     local lockDecoded, lockRecord = pcall(cjson.decode, lock or '')
     if room and lockDecoded and lockRecord.roomId == record.result.roomId then
