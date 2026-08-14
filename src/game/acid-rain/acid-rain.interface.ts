@@ -299,6 +299,8 @@ export interface ResolvedWord {
   playerId?: string;
   attemptId?: string;
   spawnedAt?: string; // ISO8601, 반응시간 계산용 (#160)
+  /** Server-authoritative target length for behavior aggregation (#168). */
+  targetKeystrokes?: number;
 }
 
 export interface JudgeWordSubmitAccepted {

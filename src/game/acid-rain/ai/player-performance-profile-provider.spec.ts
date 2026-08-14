@@ -240,9 +240,9 @@ describe('PlayerPerformanceProfileProvider', () => {
         difficulty: 'NORMAL',
       }),
     ).resolves.toEqual({
-      wpm: 56,
-      accuracy: 0.896,
-      reactionTimeMs: 720,
+      wpm: 137,
+      accuracy: 0.96,
+      reactionTimeMs: 1203,
       sampleCount: 1,
       confidence: 0.2,
     });
@@ -279,9 +279,7 @@ describe('PlayerPerformanceProfileProvider', () => {
         difficulty: 'NORMAL',
       }),
     ).resolves.toEqual({
-      wpm: 45,
-      accuracy: 0.92,
-      reactionTimeMs: 650,
+      ...playerModel.DEFAULT_PLAYER_SKILL,
       sampleCount: 0,
       confidence: 0,
     });

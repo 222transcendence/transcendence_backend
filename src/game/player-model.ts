@@ -1,4 +1,5 @@
 import type { AiDifficulty } from './acid-rain/acid-rain.interface';
+import { GENERATED_POPULATION_DEFAULT } from './population-default.generated';
 
 export interface PlayerPerformanceSample {
   wpm: number;
@@ -30,14 +31,17 @@ const SKILL_ACCURACY_RANGE = { min: 0.7, max: 0.98 } as const;
 const PRIOR_SAMPLE_COUNT = 4;
 const MAX_DECIMAL_PLACES = 4;
 
-export const DEFAULT_PLAYER_SKILL: Readonly<PlayerSkillProfile> = Object.freeze(
-  {
+export const LEGACY_DEFAULT_PLAYER_SKILL: Readonly<PlayerSkillProfile> =
+  Object.freeze({
     wpm: 45,
     accuracy: 0.92,
     reactionTimeMs: 650,
     sampleCount: 0,
     confidence: 0,
-  },
+  });
+
+export const DEFAULT_PLAYER_SKILL: Readonly<PlayerSkillProfile> = Object.freeze(
+  GENERATED_POPULATION_DEFAULT,
 );
 
 interface SanitizedSample {

@@ -2,6 +2,7 @@ import type { PlayerPerformanceSample } from './player-model';
 import {
   POPULATION_DEFAULT_CONFIG,
   POPULATION_DEFAULT_FALLBACK,
+  POPULATION_DEFAULT_LEGACY_BASELINE,
   type PopulationDefaultConfig,
 } from './population-default.config';
 
@@ -230,15 +231,16 @@ export function serializePopulationDefaultReport(
     playerContributions: playerContributions.map(
       ({ contributionUnit, matchCount }) => ({ contributionUnit, matchCount }),
     ),
-    hardcodedDefault: POPULATION_DEFAULT_FALLBACK,
+    hardcodedDefault: POPULATION_DEFAULT_LEGACY_BASELINE,
     populationCandidate: candidate,
     differenceFromHardcodedDefault: candidate
       ? {
-          wpm: candidate.wpm - POPULATION_DEFAULT_FALLBACK.wpm,
-          accuracy: candidate.accuracy - POPULATION_DEFAULT_FALLBACK.accuracy,
+          wpm: candidate.wpm - POPULATION_DEFAULT_LEGACY_BASELINE.wpm,
+          accuracy:
+            candidate.accuracy - POPULATION_DEFAULT_LEGACY_BASELINE.accuracy,
           reactionTimeMs:
             candidate.reactionTimeMs -
-            POPULATION_DEFAULT_FALLBACK.reactionTimeMs,
+            POPULATION_DEFAULT_LEGACY_BASELINE.reactionTimeMs,
         }
       : null,
   };
