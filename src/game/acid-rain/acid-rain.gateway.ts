@@ -333,6 +333,9 @@ export class AcidRainGateway
     if (!userId) throw new WsException('Unauthorized');
 
     const { roomId } = this.parseLeaveRoomPayload(payload);
+    this.logger.log(
+      `leave_room received: room=${roomId} user=${userId} socket=${client.id}`,
+    );
     // 진행 중 퇴장 → 해당 참가자만 기권 탈락 처리. N인 매치에서는 생존자가 1명
     // 이하로 남을 때만 매치가 종료된다(leaveMatch 내부에서 판단).
     await this.acidRainService.leaveMatch(roomId, userId, this.server);
