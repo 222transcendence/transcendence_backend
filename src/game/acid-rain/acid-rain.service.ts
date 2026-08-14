@@ -1583,44 +1583,34 @@ export class AcidRainService implements OnModuleInit {
     reason: MatchEndReason,
   ): RankingEntry[] {
     const participants = [...session.participants];
-    if (reason === 'TIME_LIMIT') {
-      participants.sort((a, b) => b.hp - a.hp || b.wordsTyped - a.wordsTyped);
-      const entries: RankingEntry[] = [];
-      let previous: ParticipantRuntime | undefined;
-      let rank = 0;
-      for (let index = 0; index < participants.length; index++) {
-        const current = participants[index];
-        if (
-          !previous ||
-          current.hp !== previous.hp ||
-          current.wordsTyped !== previous.wordsTyped
-        ) {
-          rank = index + 1;
-        }
-        entries.push({ participantId: current.participantId, rank });
-        previous = current;
-      }
-      return entries;
-    }
-
     const alive = participants.filter(
       (participant) => participant.status === 'ACTIVE',
     );
     const eliminated = participants
       .filter((participant) => participant.status === 'ELIMINATED')
       .sort((a, b) => (b.eliminationOrder ?? 0) - (a.eliminationOrder ?? 0));
+
+    if (reason === 'TIME_LIMIT') {
+      // 생존자만 HP 내림차순(동률 시 wordsTyped)으로 정렬해 상위 순위를 채운다.
+      // 탈락자는 몰수 시점에 고정된 HP/타수와 무관하게 항상 생존자보다 하위
+      // 순위를 가진다(GAME_DESIGN.md §3.1, backend#185).
+      alive.sort((a, b) => b.hp - a.hp || b.wordsTyped - a.wordsTyped);
+    }
+
     const ordered = [...alive, ...eliminated];
     const entries: RankingEntry[] = [];
     let rank = 0;
-    let previousOrder: number | undefined;
+    let previousKey: string | undefined;
     ordered.forEach((participant, index) => {
-      const order =
+      const key =
         participant.status === 'ACTIVE'
-          ? Number.MAX_SAFE_INTEGER
-          : participant.eliminationOrder;
-      if (index === 0 || order !== previousOrder) rank = index + 1;
+          ? reason === 'TIME_LIMIT'
+            ? `hp:${participant.hp}:${participant.wordsTyped}`
+            : 'alive'
+          : `elim:${participant.eliminationOrder}`;
+      if (index === 0 || key !== previousKey) rank = index + 1;
       entries.push({ participantId: participant.participantId, rank });
-      previousOrder = order;
+      previousKey = key;
     });
     return entries;
   }
