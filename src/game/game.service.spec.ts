@@ -101,4 +101,51 @@ describe('GameService public room lifecycle', () => {
       );
     });
   });
+
+  describe('joinRoom eviction from other WAITING rooms (#183)', () => {
+    it('evicts the user from a different WAITING room when joining a new one', async () => {
+      const roomA = await service.createRoom('user-1', 'host', 4);
+      await service.joinRoom(roomA.id, 'user-2', 'guest');
+      const roomB = await service.createRoom('user-3', 'other-host', 4);
+
+      const joined = await service.joinRoom(roomB.id, 'user-2', 'guest');
+
+      expect(joined.players.map((p) => p.userId)).toContain('user-2');
+      const updatedRoomA = await service.getRoom(roomA.id);
+      expect(updatedRoomA?.players.some((p) => p.userId === 'user-2')).toBe(
+        false,
+      );
+    });
+
+    it('does not evict the user from a room that already transitioned to IN_GAME', async () => {
+      const roomA = await service.createRoom('user-1', 'host', 2);
+      await service.joinRoom(roomA.id, 'user-2', 'guest');
+      await service.startGame(roomA.id);
+      const roomB = await service.createRoom('user-3', 'other-host', 4);
+
+      await service.joinRoom(roomB.id, 'user-2', 'guest');
+
+      const stillInRoomA = await service.getRoom(roomA.id);
+      expect(stillInRoomA?.players.some((p) => p.userId === 'user-2')).toBe(
+        true,
+      );
+    });
+
+    it('deletes the other WAITING room entirely if the evicted user was its only player', async () => {
+      const roomA = await service.createRoom('user-2', 'host', 4);
+      const roomB = await service.createRoom('user-3', 'other-host', 4);
+
+      await service.joinRoom(roomB.id, 'user-2', 'guest');
+
+      await expect(service.getRoom(roomA.id)).resolves.toBeNull();
+    });
+
+    it('findWaitingRoomsForUser excludes the given excludeRoomId even when the user is a member there', async () => {
+      const roomA = await service.createRoom('user-1', 'host', 4);
+
+      const found = await service.findWaitingRoomsForUser('user-1', roomA.id);
+
+      expect(found).toEqual([]);
+    });
+  });
 });

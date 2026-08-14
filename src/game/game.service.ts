@@ -90,6 +90,19 @@ export class GameService {
     const user = await this.userRepository.findOneBy({ id: userId });
     if (!user) throw new NotFoundException('User not found');
 
+    // #183: 다른 WAITING 방에 이미 참가 중이면 새 방 합류 전 그 방에서 먼저
+    // 퇴장시킨다. 이 보장이 joinRoom() 내부에 있어야, 호출 경로(LobbyGateway든
+    // 향후 다른 호출자든)와 무관하게 "유저는 최대 1개의 대기방에만 소속된다"는
+    // 불변조건이 깨지지 않는다. IN_GAME/FINISHED 방은 대상에서 제외 —
+    // AcidRainService 매치 세션과의 정합성 문제는 별도 이슈에서 다룬다.
+    const otherWaitingRooms = await this.findWaitingRoomsForUser(
+      userId,
+      roomId,
+    );
+    for (const otherRoom of otherWaitingRooms) {
+      await this.leaveRoom(otherRoom.id, userId);
+    }
+
     room.players.push({ userId, nickname, avatar: user.avatar, ready: false });
     await this.redisService.set(roomKey, JSON.stringify(room), ROOM_TTL);
     return room;
@@ -160,6 +173,34 @@ export class GameService {
     room.status = RoomStatus.IN_GAME;
     await this.redisService.set(roomKey, JSON.stringify(room), ROOM_TTL);
     return room;
+  }
+
+  /**
+   * userId가 현재 소속된 다른 WAITING 방 목록 (excludeRoomId 제외).
+   * IN_GAME/FINISHED 방은 포함하지 않는다 — 매치 세션(AcidRainService)과의
+   * 정합성 문제는 별도 이슈에서 다룬다(#183 논의).
+   */
+  async findWaitingRoomsForUser(
+    userId: string,
+    excludeRoomId: string,
+  ): Promise<GameRoom[]> {
+    const client = this.redisService.getClient();
+    const keys = await client.keys('game:room:*');
+    const rooms: GameRoom[] = [];
+
+    for (const key of keys) {
+      if (key === `game:room:${excludeRoomId}`) continue;
+      const data = await this.redisService.get(key);
+      if (!data) continue;
+      const room = JSON.parse(data) as GameRoom;
+      if (
+        room.status === RoomStatus.WAITING &&
+        room.players.some((p) => p.userId === userId)
+      ) {
+        rooms.push(room);
+      }
+    }
+    return rooms;
   }
 
   async getWaitingRooms(): Promise<GameRoom[]> {

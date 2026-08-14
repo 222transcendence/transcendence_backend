@@ -121,6 +121,36 @@ export class LobbyGateway implements OnModuleInit {
       );
   }
 
+  /** 특정 방에서 유저 1명이 빠진 뒤의 알림(시스템 메시지 + 호스트 변경 안내 +
+   *  ROOM_UPDATED/ROOM_CLOSED 브로드캐스트)을 보낸다. Redis 상태 변경 자체는
+   *  호출자가 이미 끝낸 뒤(LEAVE_ROOM의 명시적 leaveRoom()이든, JOIN_ROOM의
+   *  joinRoom() 내부 eviction이든) 그 결과를 조회/통지하는 역할만 한다 —
+   *  LEAVE_ROOM 케이스와 JOIN_ROOM으로 인한 강제 퇴장(#183) 양쪽에서 재사용. */
+  private notifyRoomLeft(
+    roomId: string,
+    updatedRoom: GameRoom | null,
+    wasHost: boolean,
+    leaverUserId: string,
+    leaverNickname: string,
+  ): void {
+    this.chatGateway
+      .sendSystemMessage(roomId, `${leaverNickname} 님이 방을 나갔습니다.`)
+      .catch((err) =>
+        this.logger.error(`System message failed: ${String(err)}`),
+      );
+
+    if (updatedRoom) {
+      if (wasHost && updatedRoom.hostUserId !== leaverUserId) {
+        this.announceHostChange(roomId, updatedRoom);
+      }
+      this.lobbyService.broadcast('ROOM_UPDATED', {
+        room: toLobbyRoom(updatedRoom),
+      });
+    } else {
+      this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
+    }
+  }
+
   constructor(
     private readonly jwtService: JwtService,
     private readonly userService: UserService,
@@ -335,6 +365,17 @@ export class LobbyGateway implements OnModuleInit {
           (p) => p.userId === client.userId,
         );
 
+        // #183: joinRoom()이 내부적으로 다른 WAITING 방에서 퇴장시키므로, 알림에
+        // 필요한 "퇴장 전" 정보(특히 host 여부)는 호출 전에 미리 스냅샷해둔다.
+        // 이미 대상 방의 멤버라면(idempotent 재확인 호출) 불변조건상 다른 WAITING
+        // 방에 남아있을 수 없으므로 스캔을 생략한다.
+        const roomsToEvict = alreadyMember
+          ? []
+          : await this.gameService.findWaitingRoomsForUser(
+              client.userId,
+              roomId,
+            );
+
         const room = await this.gameService
           .joinRoom(roomId, client.userId, client.nickname)
           .catch((err: Error) => {
@@ -357,6 +398,21 @@ export class LobbyGateway implements OnModuleInit {
               this.logger.error(`System message failed: ${String(err)}`),
             );
         }
+
+        // #183: 강제 퇴장된 이전 방들에도 LEAVE_ROOM과 동일한 알림을 보낸다 —
+        // 그렇지 않으면 그 방의 남은 참가자들은 유저가 조용히 사라진 것만 본다.
+        for (const evictedRoom of roomsToEvict) {
+          const wasHost = evictedRoom.hostUserId === client.userId;
+          const updatedRoom = await this.gameService.getRoom(evictedRoom.id);
+          this.notifyRoomLeft(
+            evictedRoom.id,
+            updatedRoom,
+            wasHost,
+            client.userId,
+            client.nickname,
+          );
+        }
+
         await this.broadcastRoomList();
         this.lobbyService.broadcast('ROOM_UPDATED', {
           room: toLobbyRoom(room),
@@ -384,26 +440,18 @@ export class LobbyGateway implements OnModuleInit {
         const { roomId } = payload as { roomId: string };
         const beforeRoom = await this.gameService.getRoom(roomId);
         const wasHost = beforeRoom?.hostUserId === client.userId;
-        this.chatGateway
-          .sendSystemMessage(roomId, `${client.nickname} 님이 방을 나갔습니다.`)
-          .catch((err) =>
-            this.logger.error(`System message failed: ${String(err)}`),
-          );
         const updatedRoom = await this.gameService.leaveRoom(
           roomId,
           client.userId,
         );
         client.roomId = undefined;
-        if (updatedRoom) {
-          if (wasHost && updatedRoom.hostUserId !== client.userId) {
-            this.announceHostChange(roomId, updatedRoom);
-          }
-          this.lobbyService.broadcast('ROOM_UPDATED', {
-            room: toLobbyRoom(updatedRoom),
-          });
-        } else {
-          this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
-        }
+        this.notifyRoomLeft(
+          roomId,
+          updatedRoom,
+          wasHost,
+          client.userId,
+          client.nickname,
+        );
         await this.broadcastRoomList();
         break;
       }

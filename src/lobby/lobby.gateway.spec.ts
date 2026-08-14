@@ -615,3 +615,146 @@ describe('LobbyGateway host change announcement', () => {
     );
   });
 });
+
+describe('LobbyGateway JOIN_ROOM eviction (#183)', () => {
+  let gateway: LobbyGateway;
+  let gameService: {
+    joinRoom: jest.Mock;
+    getRoom: jest.Mock;
+    getWaitingRooms: jest.Mock;
+    findWaitingRoomsForUser: jest.Mock;
+  };
+  let lobbyService: {
+    broadcast: jest.Mock<void, [string, unknown]>;
+    sendTo: jest.Mock;
+  };
+  let chatGateway: { sendSystemMessage: jest.Mock };
+  let client: LobbyClient;
+
+  const oldRoom = (hostUserId: string, players: string[]) => ({
+    id: 'old-room',
+    hostUserId,
+    maxPlayers: 4,
+    players: players.map((userId) => ({
+      userId,
+      nickname: userId,
+      ready: false,
+    })),
+    status: 'WAITING',
+    createdAt: '2026-08-14T00:00:00.000Z',
+  });
+
+  const newRoom = {
+    id: 'new-room',
+    hostUserId: 'user-3',
+    maxPlayers: 4,
+    players: [
+      { userId: 'user-3', nickname: 'user-3', ready: false },
+      { userId: 'user-2', nickname: 'guest', ready: false },
+    ],
+    status: 'WAITING',
+    createdAt: '2026-08-14T00:00:00.000Z',
+  };
+
+  beforeEach(() => {
+    gameService = {
+      joinRoom: jest.fn().mockResolvedValue(newRoom),
+      getRoom: jest.fn().mockResolvedValue(null),
+      getWaitingRooms: jest.fn().mockResolvedValue([]),
+      findWaitingRoomsForUser: jest.fn().mockResolvedValue([]),
+    };
+    lobbyService = {
+      broadcast: jest.fn<void, [string, unknown]>(),
+      sendTo: jest.fn(),
+    };
+    chatGateway = {
+      sendSystemMessage: jest.fn().mockResolvedValue(undefined),
+    };
+    gateway = new LobbyGateway(
+      {} as JwtService,
+      {} as UserService,
+      gameService as unknown as GameService,
+      { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+      lobbyService as unknown as LobbyService,
+      chatGateway as unknown as ChatGateway,
+    );
+    client = {
+      ws: {} as LobbyClient['ws'],
+      userId: 'user-2',
+      nickname: 'guest',
+    };
+  });
+
+  async function handle(type: string, payload?: unknown) {
+    const callable = gateway as unknown as {
+      handleMessage: (
+        client: LobbyClient,
+        msg: { type: string; payload?: unknown },
+      ) => Promise<void>;
+    };
+    await callable.handleMessage(client, { type, payload });
+  }
+
+  it('notifies the old room (ROOM_UPDATED + leave message) when JOIN_ROOM evicts the user from it', async () => {
+    gameService.findWaitingRoomsForUser.mockResolvedValue([
+      oldRoom('user-1', ['user-1', 'user-2']),
+    ]);
+    gameService.getRoom.mockResolvedValue(oldRoom('user-1', ['user-1']));
+
+    await handle('JOIN_ROOM', { roomId: 'new-room' });
+
+    expect(gameService.findWaitingRoomsForUser).toHaveBeenCalledWith(
+      'user-2',
+      'new-room',
+    );
+    expect(chatGateway.sendSystemMessage).toHaveBeenCalledWith(
+      'old-room',
+      'guest 님이 방을 나갔습니다.',
+    );
+    const broadcastCalls = lobbyService.broadcast.mock.calls as [
+      string,
+      { room: { id: string } },
+    ][];
+    const updatedRoomIds = broadcastCalls
+      .filter(([type]) => type === 'ROOM_UPDATED')
+      .map(([, body]) => body.room.id);
+    expect(updatedRoomIds).toEqual(
+      expect.arrayContaining(['old-room', 'new-room']),
+    );
+  });
+
+  it('broadcasts ROOM_CLOSED for the old room when eviction empties it', async () => {
+    gameService.findWaitingRoomsForUser.mockResolvedValue([
+      oldRoom('user-2', ['user-2']),
+    ]);
+    gameService.getRoom.mockResolvedValue(null);
+
+    await handle('JOIN_ROOM', { roomId: 'new-room' });
+
+    expect(lobbyService.broadcast).toHaveBeenCalledWith('ROOM_CLOSED', {
+      roomId: 'old-room',
+    });
+  });
+
+  it('announces a host change in the old room when the evicted user had been its host', async () => {
+    gameService.findWaitingRoomsForUser.mockResolvedValue([
+      oldRoom('user-2', ['user-2', 'user-4']),
+    ]);
+    gameService.getRoom.mockResolvedValue(oldRoom('user-4', ['user-4']));
+
+    await handle('JOIN_ROOM', { roomId: 'new-room' });
+
+    expect(chatGateway.sendSystemMessage).toHaveBeenCalledWith(
+      'old-room',
+      'user-4 님이 호스트가 되었습니다.',
+    );
+  });
+
+  it('does not scan for other rooms when the user is already a member of the target room (idempotent re-join)', async () => {
+    gameService.getRoom.mockResolvedValue(newRoom);
+
+    await handle('JOIN_ROOM', { roomId: 'new-room' });
+
+    expect(gameService.findWaitingRoomsForUser).not.toHaveBeenCalled();
+  });
+});
