@@ -20,6 +20,7 @@ import {
   JudgeWordSubmitResult,
   JudgeWordSubmitRejected,
   WordSpawnPayload,
+  PlayerEliminatedEventPayload,
 } from './acid-rain.interface';
 
 function assertRejected(
@@ -785,6 +786,36 @@ describe('AcidRainService', () => {
         });
         expect(eventsNamed('word_cleared')).toHaveLength(1);
       }
+    });
+
+    it('broadcasts player_eliminated with a live rank the instant a participant is knocked out mid-match (deploy#68)', async () => {
+      await startParticipants(threePlayers);
+      const session = service.getSession(ROOM_ID)!;
+      const target = session.participants[2];
+      target.hp = 8; // addActiveWord() 단어의 damage와 정확히 일치 → 정확히 0으로 탈락
+      session.hpByParticipantId['player-3'] = 8;
+      randomMock.mockReturnValue(0.99); // HOST/GUEST 중이 아니라 player-3을 타겟으로 선택
+      addActiveWord(ROOM_ID, 'w-ko', '공격');
+
+      const result = await submitWord({
+        roomId: ROOM_ID,
+        playerId: HOST.userId,
+        wordId: 'w-ko',
+        text: '공격',
+      });
+
+      expect(result.accepted).toBe(true);
+      const eliminated = eventsNamed<PlayerEliminatedEventPayload>(
+        'player_eliminated',
+      );
+      expect(eliminated).toHaveLength(1);
+      expect(eliminated[0]).toEqual({
+        userId: 'player-3',
+        rank: 3,
+        finalHp: 0,
+      });
+      // 3인전에서 1명만 탈락했으므로 나머지 둘의 매치는 계속된다.
+      expect(eventsNamed('match_end')).toHaveLength(0);
     });
 
     it('applies one damage event to one target and clamps HP at zero', async () => {

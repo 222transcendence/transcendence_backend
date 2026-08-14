@@ -30,6 +30,7 @@ function accepted(input: JudgeWordSubmitInput): JudgeWordSubmitResult {
       hp: { ai: 100 },
       targetHpByParticipantId: { ai: 100 },
     },
+    eliminatedParticipantIds: [],
   };
 }
 

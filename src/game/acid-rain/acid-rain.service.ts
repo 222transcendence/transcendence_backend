@@ -40,6 +40,7 @@ import {
   SubmitRejectedReason,
   WordClearedEventPayload,
   WordMissedEventPayload,
+  PlayerEliminatedEventPayload,
   WordSpawnPayload,
   WordResolutionState,
   AiMonitorSnapshot,
@@ -436,7 +437,8 @@ export class AcidRainService implements OnModuleInit {
         session.hpByParticipantId[participant.participantId] = hp;
         if (hp === 0) newlyEliminated.add(participant.participantId);
       }
-      this.eliminateBatch(session, [...newlyEliminated]);
+      const eliminatedIds = this.eliminateBatch(session, [...newlyEliminated]);
+      this.emitPlayerEliminated(session, eliminatedIds, server);
 
       for (const wordId of missed) {
         const payload: WordMissedEventPayload = {
@@ -485,6 +487,13 @@ export class AcidRainService implements OnModuleInit {
         .emit('word_cleared', result.wordCleared);
       wordClearedTotal.inc();
       this.flushWordAttemptOnClear(input, result.roomId);
+      if (outcome.sessionToPersist) {
+        this.emitPlayerEliminated(
+          outcome.sessionToPersist,
+          result.eliminatedParticipantIds,
+          server,
+        );
+      }
       if (result.gameEnded && outcome.attemptKey) {
         await this.finalizeKoAttempt(outcome.attemptKey, result, server);
       } else if (result.gameEnded) {
@@ -710,7 +719,9 @@ export class AcidRainService implements OnModuleInit {
 
     const target = this.selectAttackTarget(session, playerId);
     const damage = target ? this.damageForKeystrokes(word.keystrokes) : 0;
-    if (target) this.applyDamage(session, target.participantId, damage);
+    const eliminatedParticipantIds = target
+      ? this.applyDamage(session, target.participantId, damage)
+      : [];
 
     const gameEnded = this.aliveParticipants(session).length <= 1;
     const winnerId = gameEnded ? this.determineWinner(session) : null;
@@ -744,6 +755,7 @@ export class AcidRainService implements OnModuleInit {
       loserId,
       endReason: gameEnded ? 'KO' : null,
       wordCleared,
+      eliminatedParticipantIds,
     };
     return this.recordOutcome(attemptKey, input, result, session);
   }
@@ -788,7 +800,8 @@ export class AcidRainService implements OnModuleInit {
     participantId: string,
     server: Server,
   ): Promise<void> {
-    this.forfeitParticipant(session, participantId);
+    const eliminatedIds = this.forfeitParticipant(session, participantId);
+    this.emitPlayerEliminated(session, eliminatedIds, server);
     if (this.aliveParticipants(session).length <= 1) {
       await this.endMatch(session.roomId, 'FORFEIT', server);
     } else {
@@ -799,14 +812,14 @@ export class AcidRainService implements OnModuleInit {
   private forfeitParticipant(
     session: AcidRainSession,
     participantId: string,
-  ): void {
+  ): string[] {
     const participant = session.participants.find(
       (candidate) => candidate.participantId === participantId,
     );
-    if (!participant || participant.status !== 'ACTIVE') return;
+    if (!participant || participant.status !== 'ACTIVE') return [];
     participant.hp = 0;
     session.hpByParticipantId[participantId] = 0;
-    this.eliminateBatch(session, [participantId]);
+    return this.eliminateBatch(session, [participantId]);
   }
 
   handleReconnect(
@@ -1450,27 +1463,30 @@ export class AcidRainService implements OnModuleInit {
     session: AcidRainSession,
     participantId: string,
     damage: number,
-  ): void {
+  ): string[] {
     const participant = session.participants.find(
       (candidate) => candidate.participantId === participantId,
     );
-    if (!participant || participant.status !== 'ACTIVE') return;
+    if (!participant || participant.status !== 'ACTIVE') return [];
     participant.hp = Math.max(0, participant.hp - damage);
     session.hpByParticipantId[participantId] = participant.hp;
-    if (participant.hp === 0) this.eliminateBatch(session, [participantId]);
+    if (participant.hp === 0) {
+      return this.eliminateBatch(session, [participantId]);
+    }
+    return [];
   }
 
   private eliminateBatch(
     session: AcidRainSession,
     participantIds: string[],
-  ): void {
+  ): string[] {
     const ids = [...new Set(participantIds)].filter((participantId) => {
       const participant = session.participants.find(
         (candidate) => candidate.participantId === participantId,
       );
       return participant?.status === 'ACTIVE' && participant.hp <= 0;
     });
-    if (ids.length === 0) return;
+    if (ids.length === 0) return [];
     const order = session.nextEliminationOrder++;
     for (const participantId of ids) {
       const participant = session.participants.find(
@@ -1480,6 +1496,33 @@ export class AcidRainService implements OnModuleInit {
       participant.eliminatedAt = Date.now();
       participant.eliminationOrder = order;
       participant.rank = undefined;
+    }
+    return ids;
+  }
+
+  /**
+   * 매치 도중 탈락(HP 0) 발생 시 즉시 브로드캐스트한다 — N인 배틀로얄에서
+   * 다른 참가자들이 match_end 전까지 탈락 사실을 알 수 없었던 문제(deploy#68)의
+   * 수정. rank는 현재 시점 기준(생존자 전원 공동 상위, 탈락자는 탈락 역순)으로
+   * calculateRanking과 동일한 규칙을 재사용해 계산한다.
+   */
+  private emitPlayerEliminated(
+    session: AcidRainSession,
+    eliminatedParticipantIds: string[],
+    server: Server,
+  ): void {
+    if (eliminatedParticipantIds.length === 0) return;
+    const ranking = this.calculateRanking(session, 'KO');
+    const rankByParticipantId = new Map(
+      ranking.map((entry) => [entry.participantId, entry.rank]),
+    );
+    for (const participantId of eliminatedParticipantIds) {
+      const payload: PlayerEliminatedEventPayload = {
+        userId: participantId,
+        rank: rankByParticipantId.get(participantId) ?? ranking.length,
+        finalHp: session.hpByParticipantId[participantId] ?? 0,
+      };
+      server.to(`game:${session.roomId}`).emit('player_eliminated', payload);
     }
   }
 

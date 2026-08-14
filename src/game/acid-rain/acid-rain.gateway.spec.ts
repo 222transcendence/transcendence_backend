@@ -96,6 +96,7 @@ describe('AcidRainGateway word_submit', () => {
         hp: { 'host-id': 100, 'guest-id': 93 },
         targetHpByParticipantId: { 'host-id': 100, 'guest-id': 93 },
       },
+      eliminatedParticipantIds: [],
     };
     acidRainService.submitWord.mockResolvedValue(result);
 
