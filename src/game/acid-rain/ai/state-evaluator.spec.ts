@@ -52,6 +52,39 @@ describe('evaluateUtility', () => {
     expect(result.targetWordId).toBe('a');
   });
 
+  it('uses one candidate as a fixture without treating it as an engine cap', () => {
+    const result = evaluateUtility(input([word('only', 2, 2000)]));
+
+    expect(result.rankedCandidates).toHaveLength(1);
+    expect(result).toMatchObject({ action: 'SELECT', targetWordId: 'only' });
+  });
+
+  it('ranks five candidates using feasibility, urgency, damage, and reservations', () => {
+    const result = evaluateUtility(
+      input(
+        [
+          word('short-safe', 2, 2500, 6),
+          word('long-valuable', 8, 4000, 20),
+          word('too-late', 20, 1000, 100),
+          word('reserved', 1, 2500, 100),
+          word('urgent', 1, 900, 5),
+        ],
+        {
+          reservations: new Map([['reserved', { owner: 'OTHER' }]]),
+        },
+      ),
+    );
+
+    expect(result.rankedCandidates).toHaveLength(3);
+    expect(
+      result.rankedCandidates.map((candidate) => candidate.wordId),
+    ).not.toContain('too-late');
+    expect(
+      result.rankedCandidates.map((candidate) => candidate.wordId),
+    ).not.toContain('reserved');
+    expect(result.rankedCandidates[0]?.wordId).toBe('long-valuable');
+  });
+
   it('keeps a valid current target', () => {
     const result = evaluateUtility(
       input([word('a', 2, 2000)], {
@@ -204,6 +237,22 @@ describe('evaluateUtility', () => {
     );
 
     expect(result.targetWordId).toBe('valuable');
+  });
+
+  it('switches between short low-damage and long high-damage targets at the urgency boundary', () => {
+    const urgent = evaluateUtility(
+      input([word('short', 2, 900, 6), word('long', 8, 4000, 20)], {
+        profile: { ...profile, urgencyWeight: 20, damageWeight: 0.1 },
+      }),
+    );
+    const valuable = evaluateUtility(
+      input([word('short', 2, 2500, 6), word('long', 8, 4000, 20)], {
+        profile: { ...profile, urgencyWeight: 1, damageWeight: 4 },
+      }),
+    );
+
+    expect(urgent.targetWordId).toBe('short');
+    expect(valuable.targetWordId).toBe('long');
   });
 
   it('excludes other reservations but keeps self reservations eligible', () => {
