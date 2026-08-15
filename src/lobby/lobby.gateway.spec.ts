@@ -615,6 +615,62 @@ describe('LobbyGateway host change announcement', () => {
       'guest 님이 호스트가 되었습니다.',
     );
   });
+
+  it('does not send a duplicate leave message when explicit LEAVE_ROOM arrives after the disconnect grace timer was already armed (#201)', async () => {
+    const lobbyServiceReal = new LobbyService();
+    gateway = new LobbyGateway(
+      {} as JwtService,
+      {} as UserService,
+      gameService as unknown as GameService,
+      { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+      lobbyServiceReal,
+      chatGateway as unknown as ChatGateway,
+    );
+    const handlers: Record<string, (...args: unknown[]) => void> = {};
+    const ws = {
+      on: (event: string, cb: (...args: unknown[]) => void) => {
+        handlers[event] = cb;
+      },
+      readyState: 1,
+      send: jest.fn(),
+    };
+    (
+      gateway as unknown as {
+        onConnection: (ws: unknown, userId: string, nickname: string) => void;
+      }
+    ).onConnection(ws, 'user-1', 'host');
+    const connectedClient = lobbyServiceReal.findClientByUserId('user-1');
+    if (!connectedClient) throw new Error('client not registered');
+    connectedClient.roomId = 'room-1';
+
+    gameService.getRoom.mockResolvedValue(roomWithHost('user-1'));
+    gameService.leaveRoom.mockResolvedValue(roomWithHost('user-2'));
+
+    // close 이벤트가 먼저 도착해 유예 타이머를 걸어둔 뒤(현실에선 프론트가
+    // LEAVE_ROOM 전송 직후 바로 disconnect()를 호출하기 때문에 발생),
+    // 명시적 LEAVE_ROOM 처리가 그 뒤에 도착하는 순서를 재현한다.
+    handlers['close']();
+    const callable = gateway as unknown as {
+      handleMessage: (
+        client: LobbyClient,
+        msg: { type: string; payload?: unknown },
+      ) => Promise<void>;
+    };
+    await callable.handleMessage(connectedClient, {
+      type: 'LEAVE_ROOM',
+      payload: { roomId: 'room-1' },
+    });
+
+    jest.advanceTimersByTime(20000);
+    await Promise.resolve();
+    await Promise.resolve();
+    await Promise.resolve();
+
+    const leaveMessageCalls = chatGateway.sendSystemMessage.mock.calls.filter(
+      ([, message]) => message === 'host 님이 방을 나갔습니다.',
+    );
+    expect(leaveMessageCalls).toHaveLength(1);
+  });
 });
 
 describe('LobbyGateway JOIN_ROOM eviction (#183)', () => {
@@ -757,5 +813,74 @@ describe('LobbyGateway JOIN_ROOM eviction (#183)', () => {
     await handle('JOIN_ROOM', { roomId: 'new-room' });
 
     expect(gameService.findWaitingRoomsForUser).not.toHaveBeenCalled();
+  });
+
+  it('does not send a duplicate leave message for an evicted room that already had a pending disconnect-grace timer (#201)', async () => {
+    jest.useFakeTimers();
+    try {
+      const lobbyServiceReal = new LobbyService();
+      gateway = new LobbyGateway(
+        {} as JwtService,
+        {} as UserService,
+        gameService as unknown as GameService,
+        { assertNoActivePractice: jest.fn() } as unknown as AiPracticeService,
+        lobbyServiceReal,
+        chatGateway as unknown as ChatGateway,
+      );
+      const handlers: Record<string, (...args: unknown[]) => void> = {};
+      const ws = {
+        on: (event: string, cb: (...args: unknown[]) => void) => {
+          handlers[event] = cb;
+        },
+        readyState: 1,
+        send: jest.fn(),
+      };
+      (
+        gateway as unknown as {
+          onConnection: (
+            ws: unknown,
+            userId: string,
+            nickname: string,
+          ) => void;
+        }
+      ).onConnection(ws, 'user-2', 'guest');
+      const connectedClient = lobbyServiceReal.findClientByUserId('user-2');
+      if (!connectedClient) throw new Error('client not registered');
+      connectedClient.roomId = 'old-room';
+
+      // 먼저 old-room에서 소켓이 끊겨 유예 타이머가 걸린 상태를 만든 뒤(예:
+      // 페이지 전환으로 소켓이 재생성되기 직전), 새 방으로 JOIN_ROOM하면서
+      // old-room에서 강제 퇴장당하는 시나리오를 재현한다.
+      handlers['close']();
+
+      gameService.findWaitingRoomsForUser.mockResolvedValue([
+        oldRoom('user-1', ['user-1', 'user-2']),
+      ]);
+      gameService.getRoom.mockResolvedValue(oldRoom('user-1', ['user-1']));
+
+      const callable = gateway as unknown as {
+        handleMessage: (
+          client: LobbyClient,
+          msg: { type: string; payload?: unknown },
+        ) => Promise<void>;
+      };
+      await callable.handleMessage(connectedClient, {
+        type: 'JOIN_ROOM',
+        payload: { roomId: 'new-room' },
+      });
+
+      jest.advanceTimersByTime(20000);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      const leaveMessageCalls =
+        chatGateway.sendSystemMessage.mock.calls.filter(
+          ([, message]) => message === 'guest 님이 방을 나갔습니다.',
+        );
+      expect(leaveMessageCalls).toHaveLength(1);
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
