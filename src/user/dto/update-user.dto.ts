@@ -4,7 +4,7 @@ export class UpdateUserDto {
   email?: string;
   nickname?: string;
   password?: string;
-  avatar?: string;
+  avatar?: string | null;
   status?: UserStatus;
   wins?: number;
   losses?: number;
