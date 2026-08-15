@@ -23,6 +23,7 @@ function performance(
     abandonedWords: 0,
     totalKeystrokes: 20,
     typingWpm: 45,
+    effectiveWordsPerMinute: 30,
     accuracy: 0.9,
     avgReactionTimeMs: 650,
     medianReactionTimeMs: null,

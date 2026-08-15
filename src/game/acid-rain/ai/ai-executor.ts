@@ -48,12 +48,14 @@ export class AiExecutor {
     generation: number,
     token: string,
     timer: ReturnType<typeof setTimeout> | null = null,
+    reactionDelayOverrideMs?: number,
   ): AiExecutionTask {
     const selectedAtMs = this.clock.now();
     const jitterMs = (this.random.next() * 2 - 1) * profile.config.jitterMs;
     const reactionDelayMs = Math.max(
       profile.config.minimumAsyncDelayMs,
-      profile.execution.reactionDelayMs + jitterMs,
+      (reactionDelayOverrideMs ?? profile.execution.reactionDelayMs) +
+        (reactionDelayOverrideMs === undefined ? jitterMs : 0),
     );
     const reactionEndsAtMs = selectedAtMs + reactionDelayMs;
     const typingStartedAtMs = reactionEndsAtMs;

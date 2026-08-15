@@ -173,6 +173,7 @@ export interface AiMonitorPlayerProfile {
 export interface AiMonitorExecutionProfile {
   difficulty: AiDifficulty;
   typingWpm: number;
+  effectiveWordsPerMinute: number;
   accuracy: number;
   reactionDelayMs: number;
   typoProbability: number;
@@ -246,6 +247,12 @@ export interface JudgeWordSubmitInput {
   wordId: string;
   text: string;
   attemptId?: string;
+  aiTiming?: {
+    firstTypingAtMs: number;
+    submitReceivedAtMs: number;
+    correctionCount: number;
+    totalKeystrokes: number;
+  };
 }
 
 export interface WordClearedEventPayload {

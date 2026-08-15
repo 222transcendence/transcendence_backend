@@ -61,7 +61,9 @@ export class TypeOrmPlayerPerformanceSource implements PlayerPerformanceSource {
       })
       .andWhere('performance.typingWpm IS NOT NULL')
       .andWhere('performance.accuracy IS NOT NULL')
-      .andWhere('performance.avgReactionTimeMs IS NOT NULL')
+      .andWhere(
+        '(performance.avgAcquisitionTimeMs IS NOT NULL OR performance.avgReactionTimeMs IS NOT NULL)',
+      )
       .orderBy('performance.createdAt', 'DESC')
       .addOrderBy('performance.id', 'DESC')
       .take(take)
@@ -94,7 +96,9 @@ function toPerformanceSample(
 
   const wpm = Number(record.typingWpm);
   const accuracy = Number(record.accuracy);
-  const reactionTimeMs = Number(record.avgReactionTimeMs);
+  const reactionTimeMs = Number(
+    record.avgAcquisitionTimeMs ?? record.avgReactionTimeMs,
+  );
   if (
     !Number.isFinite(wpm) ||
     wpm <= 0 ||

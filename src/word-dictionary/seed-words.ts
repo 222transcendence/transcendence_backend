@@ -1,3 +1,5 @@
+import { countKeystrokes } from '../game/acid-rain/keystroke-count';
+
 /**
  * 초기 단어 seed 데이터.
  * 기존 word-bank.ts(400개) 단어를 keystrokes 기준으로 difficulty 분류해 이식.
@@ -8,7 +10,7 @@ export interface SeedWord {
   keystrokes: number;
 }
 
-export const SEED_WORDS: readonly SeedWord[] = [
+const RAW_SEED_WORDS: readonly SeedWord[] = [
   { text: '사과', keystrokes: 5 },
   { text: '바나나', keystrokes: 6 },
   { text: '하늘', keystrokes: 5 },
@@ -532,3 +534,8 @@ export const SEED_WORDS: readonly SeedWord[] = [
   { text: '눈물', keystrokes: 6 },
   { text: '콧물', keystrokes: 6 },
 ];
+
+export const SEED_WORDS: readonly SeedWord[] = RAW_SEED_WORDS.map((entry) => ({
+  text: entry.text,
+  keystrokes: countKeystrokes(entry.text),
+}));

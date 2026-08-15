@@ -17,6 +17,8 @@ export interface PlayerSkillProfile {
 
 export interface AiExecutionProfile {
   typingWpm: number;
+  /** Throughput including the per-word reaction delay, expressed as word-equivalents/minute. */
+  effectiveWordsPerMinute?: number;
   accuracy: number;
   reactionDelayMs: number;
   typoProbability?: number;
@@ -226,19 +228,36 @@ export function toAiExecutionProfile(
 ): AiExecutionProfile {
   const normalizedSkill = normalizeSkill(skill);
   const modifier = DIFFICULTY_MODIFIERS[difficulty];
+  const typingWpm = roundInteger(
+    clamp(normalizedSkill.wpm * modifier.speed, RAW_WPM_RANGE),
+  );
+  const reactionDelayMs = roundInteger(
+    clamp(
+      normalizedSkill.reactionTimeMs * modifier.reaction,
+      RAW_REACTION_RANGE,
+    ),
+  );
 
   return {
-    typingWpm: roundInteger(
-      clamp(normalizedSkill.wpm * modifier.speed, RAW_WPM_RANGE),
+    typingWpm,
+    effectiveWordsPerMinute: round(
+      effectiveWordsPerMinute(typingWpm, reactionDelayMs),
     ),
     accuracy: round(
       clamp(normalizedSkill.accuracy + modifier.accuracy, SKILL_ACCURACY_RANGE),
     ),
-    reactionDelayMs: roundInteger(
-      clamp(
-        normalizedSkill.reactionTimeMs * modifier.reaction,
-        RAW_REACTION_RANGE,
-      ),
-    ),
+    reactionDelayMs,
   };
+}
+
+/**
+ * Calculates the observable throughput of a canonical five-keystroke word.
+ * This is intentionally separate from typingWpm: reaction time is not part of WPM.
+ */
+export function effectiveWordsPerMinute(
+  typingWpm: number,
+  reactionDelayMs: number,
+): number {
+  const keystrokeMs = 60_000 / (typingWpm * 5);
+  return 60_000 / (reactionDelayMs + keystrokeMs * 5);
 }

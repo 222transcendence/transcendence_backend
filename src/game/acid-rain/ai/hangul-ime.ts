@@ -285,8 +285,17 @@ export function createHangulTypingSnapshots(text: string): string[] {
   for (const character of normalized) {
     const sequence = keySequenceFor(character);
     if (!sequence) {
-      appendJamo(composer, character);
-      snapshots.push(render(composer));
+      if (composer.cho) {
+        composer.committed = render(composer);
+        composer.cho = '';
+        composer.jung = '';
+        composer.jong = '';
+      }
+      if (!isSupportedAsciiCharacter(character)) {
+        throw new Error(`Unsupported typing character: "${character}"`);
+      }
+      composer.committed += character;
+      snapshots.push(composer.committed);
       continue;
     }
     for (const key of sequence) {
@@ -297,6 +306,11 @@ export function createHangulTypingSnapshots(text: string): string[] {
     }
   }
   return snapshots;
+}
+
+function isSupportedAsciiCharacter(character: string): boolean {
+  const code = character.codePointAt(0) ?? 0;
+  return code >= 0x20 && code <= 0x7e;
 }
 
 export function normalizeImeText(text: string): string {

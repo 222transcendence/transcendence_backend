@@ -67,7 +67,9 @@ export class TypeOrmPlayerBehaviorSource implements PlayerBehaviorSource {
         sample: {
           wpm: Number(record.typingWpm),
           accuracy: Number(record.accuracy),
-          reactionTimeMs: Number(record.avgReactionTimeMs),
+          reactionTimeMs: Number(
+            record.avgAcquisitionTimeMs ?? record.avgReactionTimeMs,
+          ),
         },
       }),
     );
