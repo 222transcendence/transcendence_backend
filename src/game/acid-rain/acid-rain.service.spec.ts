@@ -929,6 +929,60 @@ describe('AcidRainService', () => {
       ]);
       expect(payload.winnerId).toBe(HOST.userId);
     });
+
+    it('breaks a simultaneous-elimination tie by wordsTyped, higher typing ranking higher (backend#186)', async () => {
+      await startParticipants([
+        ...threePlayers,
+        {
+          participantId: 'player-4',
+          userId: 'player-4',
+          nickname: 'player-4',
+          type: 'HUMAN',
+        },
+      ]);
+      const session = service.getSession(ROOM_ID)!;
+
+      // GUEST is eliminated earlier (lower eliminationOrder) — always ranks last
+      // regardless of the tie below.
+      const guest = session.participants.find(
+        (participant) => participant.participantId === GUEST.userId,
+      )!;
+      guest.status = 'ELIMINATED';
+      guest.eliminationOrder = 1;
+      guest.hp = 0;
+      guest.wordsTyped = 3;
+      session.hpByParticipantId[GUEST.userId] = 0;
+
+      // player-3 and player-4 are eliminated in the same batch (e.g. same splash
+      // damage) — eliminateBatch() assigns them the identical eliminationOrder.
+      const third = session.participants.find(
+        (participant) => participant.participantId === 'player-3',
+      )!;
+      third.status = 'ELIMINATED';
+      third.eliminationOrder = 2;
+      third.hp = 0;
+      third.wordsTyped = 15;
+      session.hpByParticipantId['player-3'] = 0;
+
+      const fourth = session.participants.find(
+        (participant) => participant.participantId === 'player-4',
+      )!;
+      fourth.status = 'ELIMINATED';
+      fourth.eliminationOrder = 2;
+      fourth.hp = 0;
+      fourth.wordsTyped = 5;
+      session.hpByParticipantId['player-4'] = 0;
+
+      await service.endMatch(ROOM_ID, 'KO', server);
+
+      const [payload] = eventsNamed<MatchEndPayload>('match_end');
+      expect(payload.ranking).toEqual([
+        { participantId: HOST.userId, rank: 1 },
+        { participantId: 'player-3', rank: 2 },
+        { participantId: 'player-4', rank: 3 },
+        { participantId: GUEST.userId, rank: 4 },
+      ]);
+    });
   });
 
   describe('submitWord — damage formula (GAME_DESIGN.md §3.6)', () => {

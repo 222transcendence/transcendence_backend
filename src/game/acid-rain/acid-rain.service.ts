@@ -1586,9 +1586,16 @@ export class AcidRainService implements OnModuleInit {
     const alive = participants.filter(
       (participant) => participant.status === 'ACTIVE',
     );
+    // 같은 배치(예: 동일 스플래시 데미지)로 동시에 탈락하면 eliminationOrder가
+    // 같아진다(eliminateBatch) — 그 경우 그 시점까지 처리한 wordsTyped가 많은
+    // 쪽이 더 높은 순위를 갖도록 2차 정렬한다(backend#186).
     const eliminated = participants
       .filter((participant) => participant.status === 'ELIMINATED')
-      .sort((a, b) => (b.eliminationOrder ?? 0) - (a.eliminationOrder ?? 0));
+      .sort(
+        (a, b) =>
+          (b.eliminationOrder ?? 0) - (a.eliminationOrder ?? 0) ||
+          b.wordsTyped - a.wordsTyped,
+      );
 
     if (reason === 'TIME_LIMIT') {
       // 생존자만 HP 내림차순(동률 시 wordsTyped)으로 정렬해 상위 순위를 채운다.
@@ -1607,7 +1614,7 @@ export class AcidRainService implements OnModuleInit {
           ? reason === 'TIME_LIMIT'
             ? `hp:${participant.hp}:${participant.wordsTyped}`
             : 'alive'
-          : `elim:${participant.eliminationOrder}`;
+          : `elim:${participant.eliminationOrder}:${participant.wordsTyped}`;
       if (index === 0 || key !== previousKey) rank = index + 1;
       entries.push({ participantId: participant.participantId, rank });
       previousKey = key;
