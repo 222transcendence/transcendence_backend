@@ -657,7 +657,6 @@ describe('AiScheduler lifecycle and race guards', () => {
         setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
         clearTimeout: () => undefined,
       },
-      random,
     );
     scheduler.registerRoom({
       roomId: 'room',

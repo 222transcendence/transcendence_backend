@@ -188,11 +188,11 @@ describe('PerformanceService', () => {
         ([value]) => value.participantId === 'p1',
       )?.[0];
       expect(p1Record).toBeDefined();
-      expect(p1Record.correctWords).toBe(1);
-      expect(p1Record.missedWords).toBe(1);
-      expect(p1Record.typingDurationMs).toBe(3000);
-      expect(p1Record.typingWpm).toBeCloseTo(16);
-      expect(p1Record.effectiveWordsPerMinute).toBeCloseTo(9.6);
+      expect(p1Record!.correctWords).toBe(1);
+      expect(p1Record!.missedWords).toBe(1);
+      expect(p1Record!.typingDurationMs).toBe(3000);
+      expect(p1Record!.typingWpm).toBeCloseTo(16);
+      expect(p1Record!.effectiveWordsPerMinute).toBeCloseTo(9.6);
     });
 
     it('separates queue, acquisition, and initial reaction timing', async () => {
