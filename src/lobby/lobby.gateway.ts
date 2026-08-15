@@ -354,7 +354,10 @@ export class LobbyGateway implements OnModuleInit {
       }
 
       case 'JOIN_ROOM': {
-        await this.aiPracticeService.assertNoActivePractice(client.userId);
+        // AI 대전 세션이 활성 상태면 자동 취소 후 방 입장을 진행한다 (#104).
+        // assertNoActivePractice()로 막던 방식에서 변경 — 초대 수락 시 AI 세션을
+        // 명시적으로 취소하지 않아도 PvP 방에 합류할 수 있어야 한다.
+        await this.aiPracticeService.cancelAiPractice(client.userId);
         const { roomId } = payload as { roomId: string };
         // joinRoom()은 이미 참가한 유저를 idempotent하게 처리(재입장 시도를 성공으로
         // 취급)하므로, 새로 합류한 게 맞는지는 호출 전 스냅샷으로 미리 판단해야 한다 —
