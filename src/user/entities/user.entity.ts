@@ -42,6 +42,9 @@ export class User {
   @Column({ type: 'int', default: 0 })
   losses: number;
 
+  @Column({ type: 'int', default: 0 })
+  draws: number;
+
   @CreateDateColumn()
   createdAt: Date;
 

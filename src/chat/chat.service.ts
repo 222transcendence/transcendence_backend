@@ -29,9 +29,20 @@ export class ChatService {
     return await this.chatMessageRepository.findOneOrFail({ where: { id: saved.id } });
   }
 
+  /** 방 입장/퇴장 등 서버가 생성하는 SYSTEM 메시지 — 실제 sender User 없이 저장 */
+  async saveSystemMessage(roomId: string, content: string): Promise<ChatMessage> {
+    const message = this.chatMessageRepository.create({
+      sender: null,
+      content,
+      roomId,
+      type: MessageType.SYSTEM,
+    });
+    return await this.chatMessageRepository.save(message);
+  }
+
   async getHistory() {
     const messages = await this.chatMessageRepository.find({
-      where: { type: MessageType.NORMAL },
+      where: [{ type: MessageType.NORMAL }, { type: MessageType.SYSTEM }],
       order: { createdAt: 'DESC' },
       take: HISTORY_LIMIT,
     });
@@ -43,11 +54,9 @@ export class ChatService {
       roomId: msg.roomId,
       type: msg.type,
       createdAt: msg.createdAt,
-      sender: {
-        id: msg.sender.id,
-        nickname: msg.sender.nickname,
-        avatar: msg.sender.avatar,
-      },
+      sender: msg.sender
+        ? { id: msg.sender.id, nickname: msg.sender.nickname, avatar: msg.sender.avatar }
+        : { id: 'system', nickname: 'SYSTEM', avatar: null },
     }));
   }
 }

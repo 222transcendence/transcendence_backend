@@ -16,6 +16,7 @@ describe('FriendService', () => {
   let service: FriendService;
   let friendRepository: Repository<Friend>;
   let userRepository: Repository<User>;
+  let redisService: RedisService;
 
   const userA: User = {
     id: 'user-a',
@@ -25,6 +26,7 @@ describe('FriendService', () => {
     status: UserStatus.ONLINE,
     wins: 0,
     losses: 0,
+    draws: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -37,6 +39,7 @@ describe('FriendService', () => {
     status: UserStatus.OFFLINE,
     wins: 0,
     losses: 0,
+    draws: 0,
     createdAt: new Date(),
     updatedAt: new Date(),
   };
@@ -75,6 +78,7 @@ describe('FriendService', () => {
       getRepositoryToken(Friend),
     );
     userRepository = module.get<Repository<User>>(getRepositoryToken(User));
+    redisService = module.get<RedisService>(RedisService);
   });
 
   it('should be defined', () => {
