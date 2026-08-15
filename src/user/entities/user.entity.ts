@@ -12,6 +12,8 @@ export enum UserStatus {
   IN_GAME = 'IN_GAME',
 }
 
+export const DEFAULT_AVATAR = 'default_avatar.png';
+
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn('uuid')
@@ -26,7 +28,7 @@ export class User {
   @Column({ nullable: true })
   password?: string;
 
-  @Column({ default: 'default_avatar.png' })
+  @Column({ default: DEFAULT_AVATAR })
   avatar: string;
 
   @Column({

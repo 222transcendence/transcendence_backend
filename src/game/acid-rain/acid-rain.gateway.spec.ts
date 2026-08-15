@@ -556,6 +556,27 @@ describe('AcidRainGateway leave_spectate / disconnect (#70)', () => {
 
     expect(chatGateway.sendSystemMessage).not.toHaveBeenCalled();
   });
+
+  it('does not send a duplicate leave message when the socket disconnects while handleLeaveSpectate is still awaiting sendSystemMessage (#202)', async () => {
+    let resolveSendSystemMessage!: () => void;
+    chatGateway.sendSystemMessage.mockReturnValue(
+      new Promise<void>((resolve) => {
+        resolveSendSystemMessage = resolve;
+      }),
+    );
+
+    const leavePromise = gateway.handleLeaveSpectate(client, {
+      roomId: 'room-1',
+    });
+
+    // handleLeaveSpectate가 sendSystemMessage를 기다리는 도중, 클라이언트가
+    // 끊겨 disconnect 핸들러가 끼어드는 상황을 재현한다.
+    gateway.handleDisconnect(client);
+    resolveSendSystemMessage();
+    await leavePromise;
+
+    expect(chatGateway.sendSystemMessage).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('AcidRainGateway join_room concurrency (#144)', () => {

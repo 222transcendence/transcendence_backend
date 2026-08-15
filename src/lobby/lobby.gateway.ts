@@ -404,6 +404,10 @@ export class LobbyGateway implements OnModuleInit {
         for (const evictedRoom of roomsToEvict) {
           const wasHost = evictedRoom.hostUserId === client.userId;
           const updatedRoom = await this.gameService.getRoom(evictedRoom.id);
+          // 새로 들어간 방(room.id)뿐 아니라 강제 퇴장시키는 이 방에 대해서도
+          // 취소해야 한다 — 안 그러면 여기 남아있던 유예 타이머가 그대로 살아
+          // 있다가 나중에 같은 나가기 메시지를 또 보낸다(#201).
+          this.cancelPendingLeave(client.userId, evictedRoom.id);
           this.notifyRoomLeft(
             evictedRoom.id,
             updatedRoom,
@@ -445,6 +449,10 @@ export class LobbyGateway implements OnModuleInit {
           client.userId,
         );
         client.roomId = undefined;
+        // close 이벤트가 이 비동기 처리보다 먼저 실행돼 유예 타이머를 걸어둔
+        // 경우, 여기서 취소하지 않으면 ROOM_LEAVE_GRACE_MS 뒤 같은 나가기
+        // 메시지가 또 발송된다(#201).
+        this.cancelPendingLeave(client.userId, roomId);
         this.notifyRoomLeft(
           roomId,
           updatedRoom,

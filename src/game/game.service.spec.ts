@@ -6,6 +6,7 @@ describe('GameService public room lifecycle', () => {
   let userRepository: {
     findOneBy: jest.Mock;
     update: jest.Mock;
+    find: jest.Mock;
   };
 
   beforeEach(() => {
@@ -38,6 +39,7 @@ describe('GameService public room lifecycle', () => {
         Promise.resolve({ id, nickname: id, avatar: null }),
       ),
       update: jest.fn(() => Promise.resolve({ affected: 1 })),
+      find: jest.fn(() => Promise.resolve([])),
     };
     service = new GameService(
       userRepository as never,
@@ -146,6 +148,67 @@ describe('GameService public room lifecycle', () => {
       const found = await service.findWaitingRoomsForUser('user-1', roomA.id);
 
       expect(found).toEqual([]);
+    });
+  });
+
+  describe('getLeaderboard', () => {
+    // #206: 계속 패배한 유저(활동함)가 아예 안 한 유저보다 항상 위에 와야 한다.
+    // 예전 order(wins DESC, losses ASC)는 wins=0 동점자끼리 losses ASC로
+    // 타이브레이크해서, losses=0(안 한 유저)이 losses=N(전패)보다 앞에 왔다.
+    it('ranks an active user who lost every game above a user who never played', async () => {
+      userRepository.find.mockResolvedValue([
+        {
+          id: 'never-played',
+          nickname: 'never-played',
+          avatar: null,
+          wins: 0,
+          losses: 0,
+          draws: 0,
+        },
+        {
+          id: 'always-lost',
+          nickname: 'always-lost',
+          avatar: null,
+          wins: 0,
+          losses: 5,
+          draws: 0,
+        },
+      ]);
+
+      const leaderboard = await service.getLeaderboard();
+
+      expect(leaderboard.map((entry) => entry.id)).toEqual([
+        'always-lost',
+        'never-played',
+      ]);
+    });
+
+    it('ranks higher win rate above lower win rate among active users', async () => {
+      userRepository.find.mockResolvedValue([
+        {
+          id: 'low-rate',
+          nickname: 'low-rate',
+          avatar: null,
+          wins: 1,
+          losses: 9,
+          draws: 0,
+        },
+        {
+          id: 'high-rate',
+          nickname: 'high-rate',
+          avatar: null,
+          wins: 9,
+          losses: 1,
+          draws: 0,
+        },
+      ]);
+
+      const leaderboard = await service.getLeaderboard();
+
+      expect(leaderboard.map((entry) => entry.id)).toEqual([
+        'high-rate',
+        'low-rate',
+      ]);
     });
   });
 });

@@ -61,7 +61,6 @@ function setup(monitorEmitter?: (payload: unknown) => void) {
     undefined,
     clock,
     timer,
-    random,
   );
   scheduler.registerRoom({
     roomId: 'room',
@@ -585,7 +584,6 @@ describe('AiScheduler lifecycle and race guards', () => {
         setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
         clearTimeout: () => undefined,
       },
-      { next: () => 0 },
     );
     abandoning.registerRoom({
       roomId: 'room',
