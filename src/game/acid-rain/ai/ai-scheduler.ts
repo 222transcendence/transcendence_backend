@@ -31,7 +31,10 @@ import {
   AI_PROFILE_PROVIDER,
   AI_PROFILE_FACTORY,
 } from './ai-execution.types';
-import { DEFAULT_PLAYER_SKILL } from '../../player-model';
+import {
+  DEFAULT_PLAYER_SKILL,
+  effectiveWordsPerMinute,
+} from '../../player-model';
 import type { PlayerSkillProfile } from '../../player-model';
 import type { PlayerRuntimeProfile } from '../../player-personalization.config';
 import { PLAYER_PERSONALIZATION_CONFIG } from '../../player-personalization.config';
@@ -187,7 +190,14 @@ export class AiScheduler {
 
     state.latestActiveWords = change.activeWords;
     state.latestStatus = change.status;
-    state.abandonedWordIds.clear();
+    const activeWordIds = new Set(
+      change.activeWords.map((activeWord) => activeWord.wordId),
+    );
+    for (const abandonedWordId of state.abandonedWordIds) {
+      if (!activeWordIds.has(abandonedWordId)) {
+        state.abandonedWordIds.delete(abandonedWordId);
+      }
+    }
     state.cycleId += 1;
 
     if (state.evaluationInProgress) {
@@ -254,6 +264,12 @@ export class AiScheduler {
       state.executionProfile = {
         difficulty: state.difficulty,
         typingWpm: execution.typingWpm,
+        effectiveWordsPerMinute:
+          execution.effectiveWordsPerMinute ??
+          effectiveWordsPerMinute(
+            execution.typingWpm,
+            execution.reactionDelayMs,
+          ),
         accuracy: execution.accuracy,
         reactionDelayMs: execution.reactionDelayMs,
         typoProbability: typoProbability(
@@ -307,6 +323,10 @@ export class AiScheduler {
       const currentTarget = state.task
         ? this.executor.currentTarget(state.task, this.clock.now())
         : undefined;
+      // A selected task already owns the current acquisition/busy interval,
+      // including its reaction phase. A SWITCH must not charge another full
+      // reaction merely because the previous task had not started typing yet.
+      const hasCurrentTask = state.task !== undefined;
       const candidates = change.activeWords.filter(
         (word) => !state.abandonedWordIds.has(word.wordId),
       );
@@ -316,7 +336,7 @@ export class AiScheduler {
         reservations: this.selfReservation(state.task),
         currentTarget,
         profile: {
-          reactionMs: profile.reactionMs,
+          reactionMs: hasCurrentTask ? 0 : profile.reactionMs,
           perKeystrokeMs: profile.perKeystrokeMs,
           uncertaintyMs: profile.uncertaintyMs,
           urgencyWindowMs: profile.urgencyWindowMs,
@@ -330,6 +350,12 @@ export class AiScheduler {
       state.executionProfile = {
         difficulty: state.difficulty,
         typingWpm: execution.typingWpm,
+        effectiveWordsPerMinute:
+          execution.effectiveWordsPerMinute ??
+          effectiveWordsPerMinute(
+            execution.typingWpm,
+            execution.reactionDelayMs,
+          ),
         accuracy: execution.accuracy,
         reactionDelayMs: execution.reactionDelayMs,
         typoProbability: typoProbability(
@@ -365,7 +391,12 @@ export class AiScheduler {
         (candidate) => candidate.wordId === decision.targetWordId,
       );
       if (!word) return;
-      this.schedule(state, word, profile);
+      this.schedule(
+        state,
+        word,
+        profile,
+        decision.action === 'SWITCH' && hasCurrentTask ? 0 : undefined,
+      );
     } finally {
       state.evaluationInProgress = false;
       if (state.reevaluationRequested) {
@@ -433,6 +464,7 @@ export class AiScheduler {
     state: SchedulerState,
     word: AiRuntimeWord,
     profile: ReturnType<AiExecutor['evaluatorProfile']>,
+    reactionDelayOverrideMs?: number,
   ): void {
     this.invalidateTask(state);
     if (this.executor.shouldAbandon(profile)) {
@@ -447,6 +479,8 @@ export class AiScheduler {
       profile,
       generation,
       token,
+      null,
+      reactionDelayOverrideMs,
     );
     state.task = task;
     this.emitPhase(state, task, 'REACTION', 0, '');
@@ -520,6 +554,14 @@ export class AiScheduler {
       wordId,
       text: task.text,
       attemptId: `${roomId}:${token}`,
+      aiTiming: {
+        firstTypingAtMs: task.typingStartedAtMs,
+        submitReceivedAtMs: completionMs,
+        correctionCount: task.timeline.filter(
+          (segment) => segment.kind === 'CORRECTION',
+        ).length,
+        totalKeystrokes: task.totalKeystrokes,
+      },
     };
     await state.submitWord(input);
     if (this.isCurrentTask(state, task, generation, token)) {

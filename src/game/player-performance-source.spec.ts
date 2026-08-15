@@ -25,8 +25,12 @@ function record(
     abandonedWords: 0,
     totalKeystrokes: 20,
     typingWpm: 45,
+    effectiveWordsPerMinute: 30,
     accuracy: 0.9,
     avgReactionTimeMs: 650,
+    avgQueueTimeMs: null,
+    avgAcquisitionTimeMs: null,
+    avgInitialReactionTimeMs: null,
     medianReactionTimeMs: null,
     avgCompletionTimeMs: null,
     sampleCount: 11,
@@ -101,7 +105,7 @@ describe('TypeOrmPlayerPerformanceSource', () => {
       'performance.accuracy IS NOT NULL',
     );
     expect(context.builder.andWhere).toHaveBeenCalledWith(
-      'performance.avgReactionTimeMs IS NOT NULL',
+      '(performance.avgAcquisitionTimeMs IS NOT NULL OR performance.avgReactionTimeMs IS NOT NULL)',
     );
     expect(context.builder.orderBy).toHaveBeenCalledWith(
       'performance.createdAt',

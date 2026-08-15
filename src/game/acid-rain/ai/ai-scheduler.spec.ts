@@ -499,6 +499,32 @@ describe('AiScheduler lifecycle and race guards', () => {
     expect(test.submitted[0].wordId).toBe('w2');
   });
 
+  it('does not add a full reaction delay when switching while already typing', () => {
+    const test = setup();
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    test.setNow(2_000);
+    const betterWord = { ...word, wordId: 'w2', damage: 100 };
+    test.scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 2,
+      activeWords: [word, betterWord],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+
+    const task = test.scheduler.getTask('room');
+    expect(task?.wordId).toBe('w2');
+    expect(task?.reactionEndsAtMs).toBeLessThanOrEqual(
+      (task?.selectedAtMs ?? 0) + 100,
+    );
+  });
+
   it('does not create a task for NO_TARGET', () => {
     const test = setup();
     test.scheduler.onStateChange({
@@ -609,6 +635,54 @@ describe('AiScheduler lifecycle and race guards', () => {
       event: 'CLEAR',
     });
     expect(abandoning.getTask('room')).toBeUndefined();
+  });
+
+  it('does not reselect an abandoned active word on a later state update', () => {
+    let abandonDecision = true;
+    const random: RandomSource = {
+      next: () => {
+        if (abandonDecision) {
+          abandonDecision = false;
+          return 0;
+        }
+        return 1;
+      },
+    };
+    const scheduler = new AiScheduler(
+      new AiExecutor({ now: () => 0 }, random),
+      undefined,
+      undefined,
+      { now: () => 0 },
+      {
+        setTimeout: () => 1 as unknown as ReturnType<typeof setTimeout>,
+        clearTimeout: () => undefined,
+      },
+    );
+    scheduler.registerRoom({
+      roomId: 'room',
+      aiParticipantId: 'ai:room',
+      modelPlayerId: 'human-1',
+      difficulty: 'NORMAL',
+      submitWord: (input) => Promise.resolve(accepted(input)),
+      emitTypingProgress: () => undefined,
+    });
+
+    scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+    scheduler.onStateChange({
+      roomId: 'room',
+      stateVersion: 2,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+
+    expect(scheduler.getTask('room')).toBeUndefined();
   });
 
   it('deduplicates equal and smaller state versions', () => {
