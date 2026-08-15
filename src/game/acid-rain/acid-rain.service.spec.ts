@@ -316,7 +316,7 @@ describe('AcidRainService', () => {
   async function startAndReachFirstSpawn(): Promise<WordSpawnPayload> {
     await service.startMatch(ROOM_ID, server, TWO_PLAYERS);
     await jest.advanceTimersByTimeAsync(3000); // countdown
-    await jest.advanceTimersByTimeAsync(2000); // fixed initial spawn delay
+    await jest.advanceTimersByTimeAsync(1000); // fixed initial spawn delay
     const spawns = eventsNamed<WordSpawnPayload>('word_spawn');
     expect(spawns.length).toBeGreaterThanOrEqual(1);
     return spawns[0];
@@ -358,7 +358,7 @@ describe('AcidRainService', () => {
   describe('spawn — fall duration formula (GAME_DESIGN.md §3.5)', () => {
     it('fallDurationMs = (4000 + 250*keystrokes) * max(0.6, 1 - elapsedSec/300)', async () => {
       const word = await startAndReachFirstSpawn();
-      const elapsedSec = 2; // 3000ms countdown + fixed 2000ms initial spawn delay
+      const elapsedSec = 1; // fixed 1000ms initial spawn delay (countdown doesn't count toward session.startedAt)
       const expected = Math.round(
         (4000 + 250 * word.keystrokes) * Math.max(0.6, 1 - elapsedSec / 300),
       );
@@ -462,7 +462,7 @@ describe('AcidRainService', () => {
       // 채워서 인접 회피가 항상 가능한 범위에서 검증한다(4번째부터는 회피할 빈 레인이 없어
       // 인접 배치로 폴백하는 게 정상 동작 — 별도 테스트로 커버).
       for (let i = 0; i < 3; i++) {
-        await jest.advanceTimersByTimeAsync(2500);
+        await jest.advanceTimersByTimeAsync(1300);
       }
 
       const session = service.getSession(ROOM_ID)!;
@@ -2089,7 +2089,7 @@ describe('AcidRainService', () => {
       await jest.advanceTimersByTimeAsync(2000); // one word spawned
 
       service.handleDisconnect(ROOM_ID, HOST.userId, server);
-      await jest.advanceTimersByTimeAsync(5000);
+      await jest.advanceTimersByTimeAsync(2000);
 
       const clientEmit = jest.fn<void, [string, StateSyncPayload]>();
       const clientSocket = { emit: clientEmit } as unknown as Socket;
