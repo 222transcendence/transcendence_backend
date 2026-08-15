@@ -334,23 +334,36 @@ export class GameService {
   }
 
   async getLeaderboard() {
-    const users = await this.userRepository.find({
-      order: { wins: 'DESC', losses: 'ASC' },
+    // winRate/totalGames는 DB 컬럼이 아니라 SQL ORDER BY로 표현할 수 없다.
+    // 정렬 없이 전체를 가져온 뒤(기존에도 메모리에 전부 올려 slice(0, 50)
+    // 했으므로 쿼리 특성 변화 없음) 통계 계산 후 JS에서 정렬한다.
+    const users = await this.userRepository.find();
+    const withStats = users.map((u) => {
+      const totalGames = u.wins + u.losses + u.draws;
+      return {
+        id: u.id,
+        nickname: u.nickname,
+        avatar: u.avatar,
+        wins: u.wins,
+        losses: u.losses,
+        draws: u.draws,
+        totalGames,
+        winRate:
+          totalGames > 0 ? Math.round((u.wins / totalGames) * 100) / 100 : 0,
+      };
     });
-    return users
-      .slice(0, 50)
-      .map((u) => {
-        const totalGames = u.wins + u.losses + u.draws;
-        return {
-          id: u.id,
-          nickname: u.nickname,
-          avatar: u.avatar,
-          wins: u.wins,
-          losses: u.losses,
-          draws: u.draws,
-          totalGames,
-          winRate: totalGames > 0 ? Math.round((u.wins / totalGames) * 100) / 100 : 0,
-        };
-      });
+
+    withStats.sort((a, b) => {
+      // 한 번도 안 한 유저는 losses가 0이라 예전 order(wins DESC, losses ASC)로는
+      // 계속 진 유저보다 위로 갔다(#206) — 활동 여부를 최우선 기준으로 둔다.
+      if (a.totalGames > 0 !== b.totalGames > 0) {
+        return a.totalGames > 0 ? -1 : 1;
+      }
+      if (b.winRate !== a.winRate) return b.winRate - a.winRate;
+      if (b.wins !== a.wins) return b.wins - a.wins;
+      return a.losses - b.losses;
+    });
+
+    return withStats.slice(0, 50);
   }
 }
