@@ -383,6 +383,36 @@ describe('AcidRainService', () => {
     });
   });
 
+  describe('spawn count ramp (#195)', () => {
+    it('spawnCountForElapsed starts at 2, grows by 1 every 30s, caps at 4', () => {
+      const spawnCountForElapsed = (
+        service as unknown as {
+          spawnCountForElapsed: (elapsedSec: number) => number;
+        }
+      ).spawnCountForElapsed;
+      expect(spawnCountForElapsed.call(service, 0)).toBe(2);
+      expect(spawnCountForElapsed.call(service, 29)).toBe(2);
+      expect(spawnCountForElapsed.call(service, 30)).toBe(3);
+      expect(spawnCountForElapsed.call(service, 60)).toBe(4);
+      expect(spawnCountForElapsed.call(service, 300)).toBe(4);
+    });
+
+    it('a single tick spawns multiple words early in the match', async () => {
+      let uniqueWordCounter = 0;
+      mockWordDictionaryService.pickWord.mockImplementation(() => ({
+        text: `틱단어${uniqueWordCounter++}`,
+        keystrokes: 6,
+      }));
+      await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT]);
+      const session = service.getSession(ROOM_ID)!;
+      if (session.missLoopTimer) clearInterval(session.missLoopTimer);
+
+      await jest.advanceTimersByTimeAsync(1000); // first tick
+
+      expect(session.activeWords.size).toBe(2);
+    });
+  });
+
   describe('spawn volume scales with participant count (#100)', () => {
     let uniqueWordCounter = 0;
     beforeEach(() => {
@@ -403,7 +433,8 @@ describe('AcidRainService', () => {
     it('caps concurrent active words at 5 per participant (2 players → 10)', async () => {
       await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT]);
       stopMissLoop();
-      // 스폰 간격은 초반 2000ms에서 시작해 서서히 짧아진다 — 한도(10)까지 넉넉히 흘려보낸다
+      // 스폰 간격은 초반 1000ms에서 시작해 서서히 짧아지고, 틱당 2~4개씩 스폰된다(#195)
+      // — 한도(10)까지 넉넉히 흘려보낸다
       for (let i = 0; i < 24; i++) {
         await jest.advanceTimersByTimeAsync(2500);
       }
@@ -457,15 +488,24 @@ describe('AcidRainService', () => {
     it('never places two simultaneously-empty-lane spawns in adjacent lanes while non-adjacent lanes remain free', async () => {
       await startParticipants([HOST_PARTICIPANT, GUEST_PARTICIPANT]);
       stopMissLoop();
-      // 큰 덩어리 하나로 advanceTimersByTimeAsync를 호출하면 재귀 setTimeout 체인이 한 번에
-      // 다 안 풀리는 fake timer 특성이 있어, 작은 단위로 나눠 흘려보낸다. 5레인 중 3개까지만
-      // 채워서 인접 회피가 항상 가능한 범위에서 검증한다(4번째부터는 회피할 빈 레인이 없어
-      // 인접 배치로 폴백하는 게 정상 동작 — 별도 테스트로 커버).
-      for (let i = 0; i < 3; i++) {
-        await jest.advanceTimersByTimeAsync(1300);
-      }
-
       const session = service.getSession(ROOM_ID)!;
+      // spawnOneWord를 직접 3번 호출해 5레인 중 3개만 채운다(인접 회피가 항상 가능한
+      // 범위) — 틱당 스폰 개수(#195)나 타이밍 램프가 바뀌어도 이 테스트가 흔들리지
+      // 않도록 tick()/advanceTimersByTimeAsync 대신 private 메서드를 직접 호출한다.
+      // 4번째부터는 회피할 빈 레인이 없어 인접 배치로 폴백하는 게 정상 동작 —
+      // 별도 테스트로 커버.
+      const spawnOneWord = (
+        service as unknown as {
+          spawnOneWord: (
+            session: unknown,
+            server: Server,
+            elapsed: number,
+          ) => boolean;
+        }
+      ).spawnOneWord;
+      for (let i = 0; i < 3; i++) {
+        spawnOneWord.call(service, session, server, 1);
+      }
       const lanes = Array.from(session.activeWords.values())
         .map((w) => w.lane)
         .sort((a, b) => a - b);
