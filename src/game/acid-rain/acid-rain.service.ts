@@ -290,7 +290,7 @@ export class AcidRainService implements OnModuleInit {
 
   private startSpawnLoop(session: AcidRainSession, server: Server): void {
     const scheduleNext = (elapsedSec: number) => {
-      const interval = Math.max(700, 2000 - 50 * Math.floor(elapsedSec / 10));
+      const interval = Math.max(400, 1000 - 50 * Math.floor(elapsedSec / 10));
       session.spawnLoopTimer = setTimeout(tick, interval);
     };
 
@@ -363,7 +363,7 @@ export class AcidRainService implements OnModuleInit {
       scheduleNext(elapsed);
     };
 
-    const initialInterval = 2000;
+    const initialInterval = 1000;
     session.spawnLoopTimer = setTimeout(tick, initialInterval);
   }
 
@@ -868,8 +868,8 @@ export class AcidRainService implements OnModuleInit {
   ): StateSyncEventPayload {
     const elapsed = Date.now() - session.startedAt;
     const spawnInterval = Math.max(
-      700,
-      2000 - 50 * Math.floor(elapsed / 10000),
+      400,
+      1000 - 50 * Math.floor(elapsed / 10000),
     );
 
     return {

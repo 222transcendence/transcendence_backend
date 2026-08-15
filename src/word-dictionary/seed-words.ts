@@ -401,7 +401,7 @@ export const SEED_WORDS: readonly SeedWord[] = [
   { text: '로맨스', keystrokes: 7 },
   { text: '액션', keystrokes: 5 },
   { text: '판타지', keystrokes: 8 },
-  { text: 'SF', keystrokes: 2 },
+  { text: '공상과학', keystrokes: 12 },
   { text: '미술', keystrokes: 6 },
   { text: '그림', keystrokes: 5 },
   { text: '조각', keystrokes: 6 },
