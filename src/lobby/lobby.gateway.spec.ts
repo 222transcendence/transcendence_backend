@@ -68,6 +68,7 @@ describe('LobbyGateway AI practice events', () => {
       gameService as unknown as GameService,
       aiPracticeService as unknown as AiPracticeService,
       lobbyService as unknown as LobbyService,
+      { sendSystemMessage: jest.fn() } as unknown as ChatGateway,
     );
     client = {
       ws: {} as LobbyClient['ws'],
