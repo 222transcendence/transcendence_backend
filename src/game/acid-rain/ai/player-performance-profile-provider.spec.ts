@@ -240,8 +240,8 @@ describe('PlayerPerformanceProfileProvider', () => {
         difficulty: 'NORMAL',
       }),
     ).resolves.toEqual({
-      wpm: 137,
-      accuracy: 0.96,
+      wpm: 118,
+      accuracy: 0.88,
       reactionTimeMs: 1203,
       sampleCount: 1,
       confidence: 0.2,

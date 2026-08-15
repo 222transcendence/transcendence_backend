@@ -60,8 +60,8 @@ describe('player model', () => {
 
     expect(result.sampleCount).toBe(1);
     expect(result.confidence).toBe(0.2);
-    expect(result.wpm).toBe(133);
-    expect(result.accuracy).toBe(0.98);
+    expect(result.wpm).toBe(114);
+    expect(result.accuracy).toBe(0.912);
     expect(result.reactionTimeMs).toBe(1083);
   });
 
@@ -72,8 +72,8 @@ describe('player model', () => {
     ]);
 
     expect(result.sampleCount).toBe(2);
-    expect(result.wpm).toBe(124);
-    expect(result.accuracy).toBe(0.9667);
+    expect(result.wpm).toBe(108);
+    expect(result.accuracy).toBe(0.9);
     expect(result.reactionTimeMs).toBe(1069);
   });
 
@@ -205,6 +205,82 @@ describe('player model', () => {
     expect(normal.reactionDelayMs).toBeGreaterThan(hard.reactionDelayMs);
   });
 
+  it('keeps the generated population default below the NORMAL/HARD saturation boundary', () => {
+    const beginner = toAiExecutionProfile(DEFAULT_PLAYER_SKILL, 'BEGINNER');
+    const normal = toAiExecutionProfile(DEFAULT_PLAYER_SKILL, 'NORMAL');
+    const hard = toAiExecutionProfile(DEFAULT_PLAYER_SKILL, 'HARD');
+
+    expect(normal.typingWpm).toBeLessThan(140);
+    expect(normal.accuracy).toBeLessThan(0.98);
+    expect(beginner.typingWpm).toBeLessThan(normal.typingWpm);
+    expect(normal.typingWpm).toBeLessThan(hard.typingWpm);
+    expect(beginner.accuracy).toBeLessThan(normal.accuracy);
+    expect(normal.accuracy).toBeLessThan(hard.accuracy);
+    expect(beginner.reactionDelayMs).toBeGreaterThan(normal.reactionDelayMs);
+    expect(normal.reactionDelayMs).toBeGreaterThan(hard.reactionDelayMs);
+  });
+
+  it('keeps representative profiles strict while allowing only explicit extreme saturation', () => {
+    const representativeProfiles = [
+      { wpm: 40, accuracy: 0.75, reactionTimeMs: 1500 },
+      { wpm: 80, accuracy: 0.85, reactionTimeMs: 1000 },
+      { wpm: 110, accuracy: 0.9, reactionTimeMs: 700 },
+    ];
+
+    for (const skill of representativeProfiles) {
+      const outputs = DIFFICULTIES.map((difficulty) =>
+        toAiExecutionProfile(
+          { ...skill, sampleCount: 4, confidence: 0.5 },
+          difficulty,
+        ),
+      );
+      expect(outputs[0].typingWpm).toBeLessThan(outputs[1].typingWpm);
+      expect(outputs[1].typingWpm).toBeLessThan(outputs[2].typingWpm);
+      expect(outputs[0].accuracy).toBeLessThan(outputs[1].accuracy);
+      expect(outputs[1].accuracy).toBeLessThan(outputs[2].accuracy);
+      expect(outputs[0].reactionDelayMs).toBeGreaterThan(
+        outputs[1].reactionDelayMs,
+      );
+      expect(outputs[1].reactionDelayMs).toBeGreaterThan(
+        outputs[2].reactionDelayMs,
+      );
+    }
+
+    const extreme = DIFFICULTIES.map((difficulty) =>
+      toAiExecutionProfile(
+        {
+          wpm: 140,
+          accuracy: 0.98,
+          reactionTimeMs: 2000,
+          sampleCount: 20,
+          confidence: 1,
+        },
+        difficulty,
+      ),
+    );
+    expect(extreme[1].typingWpm).toBe(extreme[2].typingWpm);
+    expect(extreme[1].accuracy).toBe(extreme[2].accuracy);
+  });
+
+  it('preserves personal low/high observations instead of applying population headroom', () => {
+    const low = buildPlayerSkillProfile([
+      { wpm: 20, accuracy: 0.7, reactionTimeMs: 1000 },
+    ]);
+    const high = buildPlayerSkillProfile([
+      { wpm: 140, accuracy: 0.98, reactionTimeMs: 1000 },
+    ]);
+
+    const lowExecution = toAiExecutionProfile(low, 'NORMAL');
+    const highExecution = toAiExecutionProfile(high, 'NORMAL');
+
+    expect(lowExecution.typingWpm).toBeLessThan(highExecution.typingWpm);
+    expect(lowExecution.accuracy).toBeLessThan(highExecution.accuracy);
+    expect(highExecution.typingWpm).toBeGreaterThan(122);
+    expect(highExecution.accuracy).toBeGreaterThan(0.9);
+    expect(high.sampleCount).toBe(1);
+    expect(high.confidence).toBe(0.2);
+  });
+
   it('sanitizes malformed skill input for NORMAL difficulty', () => {
     expect(
       toAiExecutionProfile(
@@ -217,7 +293,7 @@ describe('player model', () => {
         },
         'NORMAL',
       ),
-    ).toEqual({ typingWpm: 140, accuracy: 0.98, reactionDelayMs: 250 });
+    ).toEqual({ typingWpm: 122, accuracy: 0.9, reactionDelayMs: 250 });
   });
 
   it('keeps hard output imperfect and bounded', () => {
