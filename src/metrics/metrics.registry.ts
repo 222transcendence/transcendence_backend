@@ -28,6 +28,12 @@ export const activeGames = new Gauge({
   registers: [registry],
 });
 
+export const registeredUsers = new Gauge({
+  name: 'registered_users',
+  help: 'Total number of registered user accounts',
+  registers: [registry],
+});
+
 export const websocketConnections = new Gauge({
   name: 'websocket_connections',
   help: 'Currently connected WebSocket clients',
