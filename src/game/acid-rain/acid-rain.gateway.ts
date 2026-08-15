@@ -340,6 +340,32 @@ export class AcidRainGateway
     // 이하로 남을 때만 매치가 종료된다(leaveMatch 내부에서 판단).
     await this.acidRainService.leaveMatch(roomId, userId, this.server);
 
+    // 로비 room.players도 같이 갱신한다(#197) — 이걸 안 하면 나간 사람이
+    // room.players에 유령으로 남아, 로비 화면의 "재접속하기"(frontend#112)가
+    // 잘못 뜨고 handleJoinRoom()의 isParticipant 체크도 이 사람을 계속 참가자로
+    // 착각한다. AcidRainService의 매치 상태(session.participants)와 GameService의
+    // 로비 상태(room.players)는 서로 다른 저장소라 명시적으로 동기화해줘야 한다.
+    const updatedRoom = await this.gameService.leaveRoom(roomId, userId);
+    if (updatedRoom) {
+      this.lobbyService.broadcast('ROOM_UPDATED', {
+        room: {
+          id: updatedRoom.id,
+          hostUserId: updatedRoom.hostUserId,
+          maxPlayers: updatedRoom.maxPlayers,
+          players: updatedRoom.players.map((player) => ({
+            userId: player.userId,
+            nickname: player.nickname,
+            avatar: player.avatar,
+            ready: player.ready,
+          })),
+          status: 'IN_GAME' as const,
+          createdAt: updatedRoom.createdAt,
+        },
+      });
+    } else {
+      this.lobbyService.broadcast('ROOM_CLOSED', { roomId });
+    }
+
     await client.leave(`game:${roomId}`);
     (client.data as GameSocketData).roomId = undefined;
   }
