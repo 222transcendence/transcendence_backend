@@ -113,6 +113,18 @@ describe('UserController', () => {
       expect(service.update).toHaveBeenCalledWith(mockUser.id, updateDto);
       expect(result.data.nickname).toBe('tester');
     });
+
+    it('should reset avatar to the default instead of forwarding null (#203)', async () => {
+      const updateDto = { avatar: null };
+      const updatedUser = { ...mockUser, avatar: 'default_avatar.png' };
+      mockUserService.update.mockResolvedValue(updatedUser);
+
+      const result = await controller.updateMe(mockUser, updateDto);
+      expect(service.update).toHaveBeenCalledWith(mockUser.id, {
+        avatar: 'default_avatar.png',
+      });
+      expect(result.data.avatar).toBe('default_avatar.png');
+    });
   });
 
   describe('uploadAvatar', () => {

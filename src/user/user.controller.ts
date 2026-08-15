@@ -15,7 +15,7 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { UserService } from './user.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
-import { User } from './entities/user.entity';
+import { User, DEFAULT_AVATAR } from './entities/user.entity';
 import { UpdateProfileDto } from './dto/update-profile.dto';
 import { avatarUploadOptions, AVATAR_URL_PREFIX } from './avatar-upload.config';
 import { RedisService } from '../redis/redis.service';
@@ -62,7 +62,15 @@ export class UserController {
       }
     }
 
-    const updatedUser = await this.userService.update(user.id, updateProfileDto);
+    // avatar: null은 "삭제" 요청이다. avatar 컬럼은 NOT NULL이라 null을
+    // 그대로 저장하려 하면 DB 제약 위반으로 500이 난다(#203) — 기본
+    // 아바타로 치환해서 넘긴다.
+    const patch = {
+      ...updateProfileDto,
+      ...(updateProfileDto.avatar === null ? { avatar: DEFAULT_AVATAR } : {}),
+    };
+
+    const updatedUser = await this.userService.update(user.id, patch);
     const { password, ...result } = updatedUser;
     return { timestamp: new Date().toISOString(), status: 200, data: result, error: null };
   }
