@@ -431,8 +431,15 @@ export class AcidRainGateway
 
     const { roomId } = this.parseLeaveSpectatePayload(payload);
 
-    // 메시지 전송을 먼저 완료한 뒤 룸에서 나간다 — 순서를 바꾸면 spectator 소켓이
-    // 이미 룸을 떠난 후에 broadcast가 나가 spectator 본인이 퇴장 메시지를 못 받는다.
+    // spectatingRoomId를 먼저 지워서, 아래 sendSystemMessage await 도중 소켓이
+    // 끊겨도 handleDisconnect가 같은 퇴장 메시지를 중복 전송하지 않게 한다(#202).
+    // 소켓의 실제 room 멤버십(client.leave, 브로드캐스트 수신 여부를 결정)은
+    // 여전히 메시지 전송 뒤에 정리하므로 본인이 메시지를 못 받는 일은 없다 —
+    // 메시지 전송을 먼저 완료한 뒤 룸에서 나간다: 순서를 바꾸면 spectator
+    // 소켓이 이미 룸을 떠난 후에 broadcast가 나가 spectator 본인이 퇴장
+    // 메시지를 못 받는다.
+    (client.data as GameSocketData).spectatingRoomId = undefined;
+
     await this.chatGateway
       .sendSystemMessage(
         roomId,
@@ -445,7 +452,6 @@ export class AcidRainGateway
       );
 
     await client.leave(`game:${roomId}`);
-    (client.data as GameSocketData).spectatingRoomId = undefined;
   }
 
   // ─── typing_progress (#71) ────────────────────────────────────────────────
