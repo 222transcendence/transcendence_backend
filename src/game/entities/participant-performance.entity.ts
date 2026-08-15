@@ -61,10 +61,25 @@ export class ParticipantPerformance {
   typingWpm: number | null;
 
   @Column('float', { nullable: true })
+  effectiveWordsPerMinute: number | null;
+
+  @Column('float', { nullable: true })
   accuracy: number | null;
 
   @Column('float', { nullable: true })
   avgReactionTimeMs: number | null;
+
+  /** Total spawn-to-first-input latency, retained for compatibility. */
+  @Column('float', { nullable: true })
+  avgQueueTimeMs: number | null;
+
+  /** Time from the previous submit (or spawn) to first input. */
+  @Column('float', { nullable: true })
+  avgAcquisitionTimeMs: number | null;
+
+  /** Acquisition latency when no previous word was still being completed. */
+  @Column('float', { nullable: true })
+  avgInitialReactionTimeMs: number | null;
 
   @Column('float', { nullable: true })
   medianReactionTimeMs: number | null;

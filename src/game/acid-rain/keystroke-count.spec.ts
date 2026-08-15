@@ -20,8 +20,23 @@ describe('countKeystrokes', () => {
     expect(countKeystrokes('사과')).toBe(5);
   });
 
-  it('throws on non-Hangul-syllable characters', () => {
-    expect(() => countKeystrokes('abc')).toThrow();
-    expect(() => countKeystrokes('가 나')).toThrow();
+  it.each([
+    ['SF', 2],
+    ['aZ', 2],
+    ['09', 2],
+    ['가A1', 4],
+    ['Hello, 42!', 10],
+    ["'()[]{}!?", 9],
+  ])('counts ASCII and mixed text: %s -> %d', (word, expected) => {
+    expect(countKeystrokes(word)).toBe(expected);
   });
+
+  it.each(['가\n', '가😀', '가'])(
+    'rejects unsupported characters: %s',
+    (word) => {
+      expect(() => countKeystrokes(word)).toThrow(
+        'Unsupported dictionary character',
+      );
+    },
+  );
 });

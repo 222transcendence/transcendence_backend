@@ -12,10 +12,12 @@ describe('deterministic Korean 2-set IME', () => {
     expect(createHangulTypingSnapshots(text)).toEqual(expected);
   });
 
-  it('handles mixed text, empty text, and unsupported characters safely', () => {
+  it('handles mixed text and rejects unsupported characters', () => {
     expect(createHangulTypingSnapshots('')).toEqual([]);
     expect(createHangulTypingSnapshots('한글42!').at(-1)).toBe('한글42!');
-    expect(createHangulTypingSnapshots('🙂').at(-1)).toBe('🙂');
+    expect(() => createHangulTypingSnapshots('🙂')).toThrow(
+      'Unsupported typing character',
+    );
   });
 
   it('normalizes decomposed Unicode before composing', () => {

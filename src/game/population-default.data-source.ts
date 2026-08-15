@@ -78,6 +78,7 @@ export class TypeOrmPopulationDefaultDataSource {
         'performance.typingWpm',
         'performance.accuracy',
         'performance.avgReactionTimeMs',
+        'performance.avgAcquisitionTimeMs',
         'performance.createdAt',
       ])
       .where('performance.userId IN (:...userIds)', { userIds })
@@ -102,7 +103,9 @@ export class TypeOrmPopulationDefaultDataSource {
       resultStatus: row.resultStatus,
       wpm: toMetric(row.typingWpm),
       accuracy: toMetric(row.accuracy),
-      reactionTimeMs: toMetric(row.avgReactionTimeMs),
+      reactionTimeMs: toMetric(
+        row.avgAcquisitionTimeMs ?? row.avgReactionTimeMs,
+      ),
       createdAt: row.createdAt.toISOString(),
       // The allowlist is the explicit consent boundary for this offline job.
       consented: true,

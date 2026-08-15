@@ -97,6 +97,61 @@ function aggregate(difficulty: Difficulty): Aggregate {
   };
 }
 
+function runEquivalentProfileMatch(seed: number): 'AI' | 'HUMAN' | 'DRAW' {
+  const aiRandom = seededRandom(seed);
+  const humanRandom = seededRandom(seed ^ 0x9e3779b9);
+  const aiExecutor = new AiExecutor({ now: () => 0 }, aiRandom);
+  const humanExecutor = new AiExecutor({ now: () => 0 }, humanRandom);
+  const factory = new DefaultAiExecutionProfileFactory();
+  const execution = factory.create(DEFAULT_PLAYER_SKILL, 'NORMAL');
+  const aiProfile = createEvaluatorProfile(execution, 'NORMAL');
+  const humanProfile = createEvaluatorProfile(execution, 'NORMAL');
+  let aiScore = 0;
+  let humanScore = 0;
+
+  for (let round = 0; round < 40; round += 1) {
+    const keystrokes = 4 + Math.floor(aiRandom.next() * 5);
+    const word = {
+      wordId: `word-${round}`,
+      text: 'x'.repeat(keystrokes),
+      keystrokes,
+      landAtMs: 4_000,
+      damage: 5 + Math.ceil(keystrokes / 2),
+    };
+    const aiAbandoned = aiExecutor.shouldAbandon(aiProfile);
+    const aiTask = aiExecutor.createTask(
+      'ai-balance',
+      word,
+      aiProfile,
+      round + 1,
+      `ai-${round}`,
+    );
+    const humanAbandoned = humanExecutor.shouldAbandon(humanProfile);
+    const humanTask = humanExecutor.createTask(
+      'human-balance',
+      word,
+      humanProfile,
+      round + 1,
+      `human-${round}`,
+    );
+    if (!aiAbandoned && aiExecutor.completionMs(aiTask) <= word.landAtMs) {
+      aiScore += word.damage;
+    }
+    if (
+      !humanAbandoned &&
+      humanExecutor.completionMs(humanTask) <= word.landAtMs
+    ) {
+      humanScore += word.damage;
+    }
+  }
+
+  return aiScore === humanScore
+    ? 'DRAW'
+    : aiScore > humanScore
+      ? 'AI'
+      : 'HUMAN';
+}
+
 describe('AI deterministic balance smoke', () => {
   it('keeps difficulty parameter monotonicity separate from match outcomes', () => {
     const profiles = DIFFICULTIES.map((difficulty) =>
@@ -161,5 +216,17 @@ describe('AI deterministic balance smoke', () => {
     expect(results.some((result) => result.abandoned)).toBe(true);
     expect(results.some((result) => result.aiWon)).toBe(true);
     expect(results.some((result) => result.humanWon)).toBe(true);
+  });
+
+  it('keeps equivalent NORMAL profiles in the agreed 40-60% parity range', () => {
+    const results = Array.from({ length: 256 }, (_, index) =>
+      runEquivalentProfileMatch(index + 1),
+    );
+    const decisive = results.filter((result) => result !== 'DRAW');
+    const aiWinRate =
+      decisive.filter((result) => result === 'AI').length / decisive.length;
+    expect(decisive.length).toBeGreaterThan(200);
+    expect(aiWinRate).toBeGreaterThanOrEqual(0.4);
+    expect(aiWinRate).toBeLessThanOrEqual(0.6);
   });
 });

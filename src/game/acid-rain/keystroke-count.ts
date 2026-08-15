@@ -1,8 +1,10 @@
 /**
- * 2벌식(two-set) 한글 키보드 기준 실제 타건 횟수를 계산한다.
- * 쌍자음(ㄲㄸㅃㅆㅉ)과 이중모음 중 Shift가 필요한 ㅒ/ㅖ는 Shift+베이스키로
- * 2타 처리하고, 이중모음(ㅘㅙㅚㅝㅞㅟㅢ)과 겹받침(ㄳㄵㄶㄺㄻㄼㄽㄾㄿㅀㅄ)은
- * 서로 다른 두 키를 순서대로 누르는 조합이라 Shift 없이 2타로 계산한다.
+ * 게임 dictionary 문자열의 실제 physical keystroke 수를 계산한다.
+ *
+ * 완성형 한글은 2벌식(two-set) 입력 규칙을 사용하고, ASCII printable
+ * 문자는 영문 대·소문자, 숫자, 공백, 문장부호 모두 한 타로 계산한다.
+ * 제어문자와 지원하지 않는 Unicode 문자는 입력 데이터 오류로 명시적으로
+ * 실패시킨다.
  */
 
 const CHO = [
@@ -166,19 +168,22 @@ const JONG_KEYS: Record<string, number> = {
 
 const S_BASE = 0xac00;
 const S_LAST = 0xd7a3;
+const ASCII_PRINTABLE_MIN = 0x20;
+const ASCII_PRINTABLE_MAX = 0x7e;
 
 /**
- * 완성형 한글 음절(가~힣) 문자열의 2벌식 타건 횟수를 반환한다.
- * 한글 음절이 아닌 문자(공백, 영문, 숫자, 자모 단독 등)가 섞여 있으면 예외를 던진다.
+ * 게임 dictionary 문자열의 2벌식/ASCII physical keystroke 횟수를 반환한다.
  */
 export function countKeystrokes(word: string): number {
   let total = 0;
   for (const ch of word) {
     const code = ch.codePointAt(0)!;
+    if (code >= ASCII_PRINTABLE_MIN && code <= ASCII_PRINTABLE_MAX) {
+      total += 1;
+      continue;
+    }
     if (code < S_BASE || code > S_LAST) {
-      throw new Error(
-        `Not a precomposed Hangul syllable: "${ch}" in "${word}"`,
-      );
+      throw new Error(`Unsupported dictionary character: "${ch}" in "${word}"`);
     }
     const offset = code - S_BASE;
     const cho = CHO[Math.floor(offset / (21 * 28))];

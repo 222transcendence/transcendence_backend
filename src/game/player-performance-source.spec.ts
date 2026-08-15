@@ -101,7 +101,7 @@ describe('TypeOrmPlayerPerformanceSource', () => {
       'performance.accuracy IS NOT NULL',
     );
     expect(context.builder.andWhere).toHaveBeenCalledWith(
-      'performance.avgReactionTimeMs IS NOT NULL',
+      '(performance.avgAcquisitionTimeMs IS NOT NULL OR performance.avgReactionTimeMs IS NOT NULL)',
     );
     expect(context.builder.orderBy).toHaveBeenCalledWith(
       'performance.createdAt',

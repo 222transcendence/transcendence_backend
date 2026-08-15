@@ -62,6 +62,31 @@ describe('AiExecutor timeline progress', () => {
     ).toEqual(['ㄱ', '가', '간', '가나']);
   });
 
+  it('keeps mixed ASCII and Hangul snapshots aligned with target keystrokes', () => {
+    const clock: Clock = { now: () => 0 };
+    const random: RandomSource = { next: () => 1 };
+    const executor = new AiExecutor(clock, random);
+    const task = executor.createTask(
+      'room',
+      {
+        wordId: 'mixed',
+        text: '가A1!',
+        keystrokes: 5,
+        landAtMs: 5000,
+        damage: 1,
+      },
+      profile(),
+      1,
+      'token',
+    );
+    const keys = task.timeline.filter(
+      (segment) => segment.kind === 'KEYSTROKE',
+    );
+    expect(keys).toHaveLength(5);
+    expect(task.typingSnapshots).toHaveLength(5);
+    expect(executor.partialText(task, keys.at(-1)!.completionMs)).toBe('가A1!');
+  });
+
   it('reports NOT_STARTED during reaction delay', () => {
     const { executor, task } = taskWithRandom([1, 1, 1]);
     expect(executor.currentTarget(task, task.reactionEndsAtMs - 1)).toEqual({

@@ -537,7 +537,9 @@ export class AcidRainService implements OnModuleInit {
     const now = new Date();
     const spawnedAtStr = session.resolvedWords.get(input.wordId)?.spawnedAt;
     const wordSpawnedAt = spawnedAtStr ? new Date(spawnedAtStr) : null;
-    const targetKeystrokes = session.resolvedWords.get(input.wordId)?.targetKeystrokes;
+    const targetKeystrokes = session.resolvedWords.get(
+      input.wordId,
+    )?.targetKeystrokes;
     void this.performanceService
       .flushWordAttempt({
         matchId: roomId,
@@ -550,7 +552,16 @@ export class AcidRainService implements OnModuleInit {
         submitReceivedAt: now,
         resolvedAt: now,
         wordSpawnedAt,
-        state: state ?? this.emptyWordTypingState(),
+        state:
+          input.aiTiming && participant.type === 'AI'
+            ? {
+                ...this.emptyWordTypingState(),
+                firstTypingAt: new Date(input.aiTiming.firstTypingAtMs),
+                lastTypingAt: new Date(input.aiTiming.submitReceivedAtMs),
+                correctionCount: input.aiTiming.correctionCount,
+                totalKeystrokes: input.aiTiming.totalKeystrokes,
+              }
+            : (state ?? this.emptyWordTypingState()),
       })
       .catch((err: unknown) =>
         this.logger.error('flushWordAttempt error', err),

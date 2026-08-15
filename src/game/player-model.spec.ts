@@ -4,6 +4,7 @@ import {
   toAiExecutionProfile,
   PlayerPerformanceSample,
   PlayerSkillProfile,
+  effectiveWordsPerMinute,
 } from './player-model';
 
 const SAMPLE: PlayerPerformanceSample = {
@@ -15,6 +16,10 @@ const SAMPLE: PlayerPerformanceSample = {
 const DIFFICULTIES = ['BEGINNER', 'NORMAL', 'HARD'] as const;
 
 describe('player model', () => {
+  it('keeps reaction-inclusive throughput on a words-per-minute basis', () => {
+    expect(effectiveWordsPerMinute(81, 1492)).toBeCloseTo(26.87, 2);
+  });
+
   it('returns the exact default profile when every sample is excluded', () => {
     expect(
       buildPlayerSkillProfile([
@@ -293,7 +298,7 @@ describe('player model', () => {
         },
         'NORMAL',
       ),
-    ).toEqual({ typingWpm: 122, accuracy: 0.9, reactionDelayMs: 250 });
+    ).toMatchObject({ typingWpm: 122, accuracy: 0.9, reactionDelayMs: 250 });
   });
 
   it('keeps hard output imperfect and bounded', () => {
