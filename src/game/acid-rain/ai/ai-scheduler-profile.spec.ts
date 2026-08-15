@@ -10,6 +10,7 @@ import {
   DEFAULT_PLAYER_SKILL,
   type PlayerSkillProfile,
 } from '../../player-model';
+import { DefaultAiExecutionProfileFactory } from './ai-execution-profile';
 
 const word = {
   wordId: 'word-1',
@@ -65,6 +66,41 @@ function executionProfile() {
 }
 
 describe('AiScheduler profile preload snapshot', () => {
+  it('publishes the headroom-safe runtime and execution profiles used by the scheduler', () => {
+    const monitor: unknown[] = [];
+    const profileProvider: AiProfileProvider = {
+      getSkillProfile: jest.fn(() => ({ ...DEFAULT_PLAYER_SKILL })),
+    };
+    const profileFactory = new DefaultAiExecutionProfileFactory();
+    const { scheduler } = createScheduler(profileProvider, profileFactory);
+    const room = {
+      ...registration('human-1'),
+      emitMonitorSnapshot: (payload: unknown) => monitor.push(payload),
+    };
+
+    scheduler.registerRoom(room);
+    scheduler.onStateChange({
+      roomId: 'room-1',
+      stateVersion: 1,
+      activeWords: [word],
+      status: 'IN_PROGRESS',
+      event: 'SPAWN',
+    });
+
+    const snapshot = monitor[0] as {
+      profile: PlayerSkillProfile;
+      executionProfile: ReturnType<DefaultAiExecutionProfileFactory['create']>;
+    };
+    const expected = profileFactory.create(DEFAULT_PLAYER_SKILL, 'NORMAL');
+    expect(snapshot.profile.wpm).toBe(DEFAULT_PLAYER_SKILL.wpm);
+    expect(snapshot.profile.accuracy).toBe(DEFAULT_PLAYER_SKILL.accuracy);
+    expect(snapshot.executionProfile).toMatchObject({
+      typingWpm: expected.typingWpm,
+      accuracy: expected.accuracy,
+      reactionDelayMs: expected.reactionDelayMs,
+    });
+  });
+
   it('loads once, uses default before completion, then uses the snapshot on the next evaluation', async () => {
     let resolveProfile!: (profile: PlayerSkillProfile) => void;
     const profile = { ...DEFAULT_PLAYER_SKILL, wpm: 90 };

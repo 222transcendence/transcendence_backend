@@ -5,6 +5,7 @@ import {
   createEvaluatorProfile,
   typoProbability,
 } from './ai-execution-profile';
+import { AiExecutor } from './ai-executor';
 
 describe('AI execution profile adapter', () => {
   it('uses the existing player model for every difficulty', () => {
@@ -31,6 +32,34 @@ describe('AI execution profile adapter', () => {
     );
     expect(profile.perKeystrokeMs).toBeGreaterThan(0);
     expect(profile.reactionMs).toBeGreaterThan(0);
+  });
+
+  it('propagates WPM, accuracy, and reaction changes into executor timing', () => {
+    const low = createEvaluatorProfile(
+      { typingWpm: 60, accuracy: 0.8, reactionDelayMs: 500 },
+      'NORMAL',
+    );
+    const high = createEvaluatorProfile(
+      { typingWpm: 120, accuracy: 0.95, reactionDelayMs: 300 },
+      'NORMAL',
+    );
+    const executor = new AiExecutor({ now: () => 0 }, { next: () => 0.5 });
+    const word = {
+      wordId: 'profile-word',
+      text: 'abc',
+      keystrokes: 3,
+      landAtMs: 10_000,
+      damage: 1,
+    };
+
+    const lowTask = executor.createTask('low-room', word, low, 1, 'low');
+    const highTask = executor.createTask('high-room', word, high, 1, 'high');
+
+    expect(high.perKeystrokeMs).toBeLessThan(low.perKeystrokeMs);
+    expect(typoProbability(low.execution.accuracy, low.config)).toBeGreaterThan(
+      typoProbability(high.execution.accuracy, high.config),
+    );
+    expect(highTask.reactionEndsAtMs).toBeLessThan(lowTask.reactionEndsAtMs);
   });
 
   it('passes observed behavior metrics into the evaluator after difficulty', () => {

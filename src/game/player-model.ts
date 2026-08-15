@@ -31,6 +31,29 @@ const SKILL_ACCURACY_RANGE = { min: 0.7, max: 0.98 } as const;
 const PRIOR_SAMPLE_COUNT = 4;
 const MAX_DECIMAL_PLACES = 4;
 
+const DIFFICULTY_MODIFIERS: Record<
+  AiDifficulty,
+  { speed: number; accuracy: number; reaction: number }
+> = {
+  BEGINNER: { speed: 0.85, accuracy: -0.08, reaction: 1.15 },
+  NORMAL: { speed: 1, accuracy: 0, reaction: 1 },
+  HARD: { speed: 1.15, accuracy: 0.08, reaction: 0.85 },
+};
+
+const difficultyModifiers = Object.values(DIFFICULTY_MODIFIERS);
+const MAX_DIFFICULTY_SPEED = Math.max(
+  ...difficultyModifiers.map(({ speed }) => speed),
+);
+const MAX_DIFFICULTY_ACCURACY_OFFSET = Math.max(
+  ...difficultyModifiers.map(({ accuracy }) => accuracy),
+);
+const MIN_DIFFICULTY_REACTION = Math.min(
+  ...difficultyModifiers.map(({ reaction }) => reaction),
+);
+const MAX_DIFFICULTY_REACTION = Math.max(
+  ...difficultyModifiers.map(({ reaction }) => reaction),
+);
+
 export const LEGACY_DEFAULT_PLAYER_SKILL: Readonly<PlayerSkillProfile> =
   Object.freeze({
     wpm: 45,
@@ -40,8 +63,34 @@ export const LEGACY_DEFAULT_PLAYER_SKILL: Readonly<PlayerSkillProfile> =
     confidence: 0,
   });
 
+function normalizePopulationDefault(
+  skill: PlayerSkillProfile,
+): PlayerSkillProfile {
+  return {
+    ...skill,
+    wpm: roundInteger(
+      clamp(skill.wpm, {
+        min: RAW_WPM_RANGE.min,
+        max: RAW_WPM_RANGE.max / MAX_DIFFICULTY_SPEED,
+      }),
+    ),
+    accuracy: round(
+      clamp(skill.accuracy, {
+        min: SKILL_ACCURACY_RANGE.min,
+        max: SKILL_ACCURACY_RANGE.max - MAX_DIFFICULTY_ACCURACY_OFFSET,
+      }),
+    ),
+    reactionTimeMs: roundInteger(
+      clamp(skill.reactionTimeMs, {
+        min: RAW_REACTION_RANGE.min / MIN_DIFFICULTY_REACTION,
+        max: RAW_REACTION_RANGE.max / MAX_DIFFICULTY_REACTION,
+      }),
+    ),
+  };
+}
+
 export const DEFAULT_PLAYER_SKILL: Readonly<PlayerSkillProfile> = Object.freeze(
-  GENERATED_POPULATION_DEFAULT,
+  normalizePopulationDefault(GENERATED_POPULATION_DEFAULT),
 );
 
 interface SanitizedSample {
@@ -54,15 +103,6 @@ interface MetricRange {
   min: number;
   max: number;
 }
-
-const DIFFICULTY_MODIFIERS: Record<
-  AiDifficulty,
-  { speed: number; accuracy: number; reaction: number }
-> = {
-  BEGINNER: { speed: 0.85, accuracy: -0.08, reaction: 1.15 },
-  NORMAL: { speed: 1, accuracy: 0, reaction: 1 },
-  HARD: { speed: 1.15, accuracy: 0.08, reaction: 0.85 },
-};
 
 function clamp(value: number, range: MetricRange): number {
   return Math.min(range.max, Math.max(range.min, value));
