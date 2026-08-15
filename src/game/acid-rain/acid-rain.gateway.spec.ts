@@ -7,6 +7,7 @@ import { AcidRainService } from './acid-rain.service';
 import { AiPracticeService } from '../ai-practice.service';
 import { ChatGateway } from '../../chat/chat.gateway';
 import { GameService } from '../game.service';
+import { GameRoom, RoomStatus } from '../game.interface';
 import { LobbyService } from '../../lobby/lobby.service';
 import {
   JudgeWordSubmitInput,
@@ -237,9 +238,22 @@ describe('AcidRainGateway leave_room', () => {
   let redisService: { get: jest.Mock };
   let aiPracticeService: { getAiPracticeSession: jest.Mock };
   let chatGateway: { sendSystemMessage: jest.Mock };
+  let gameService: {
+    leaveRoom: jest.Mock<Promise<GameRoom | null>, [string, string]>;
+  };
+  let lobbyService: { broadcast: jest.Mock<void, [string, unknown]> };
   let clientLeave: jest.Mock<Promise<void>, [string]>;
   let client: Socket;
   let server: Server;
+
+  const remainingRoom: GameRoom = {
+    id: 'room-1',
+    hostUserId: 'guest-id',
+    maxPlayers: 4,
+    status: RoomStatus.IN_GAME,
+    players: [{ userId: 'guest-id', nickname: 'guest', ready: false }],
+    createdAt: '2026-08-15T00:00:00.000Z',
+  };
 
   beforeEach(() => {
     acidRainService = {
@@ -250,6 +264,12 @@ describe('AcidRainGateway leave_room', () => {
     redisService = { get: jest.fn() };
     aiPracticeService = { getAiPracticeSession: jest.fn() };
     chatGateway = { sendSystemMessage: jest.fn().mockResolvedValue(undefined) };
+    gameService = {
+      leaveRoom: jest
+        .fn<Promise<GameRoom | null>, [string, string]>()
+        .mockResolvedValue(remainingRoom),
+    };
+    lobbyService = { broadcast: jest.fn<void, [string, unknown]>() };
     gateway = new AcidRainGateway(
       {} as JwtService,
       {} as UserService,
@@ -257,8 +277,8 @@ describe('AcidRainGateway leave_room', () => {
       acidRainService as unknown as AcidRainService,
       aiPracticeService as unknown as AiPracticeService,
       chatGateway as unknown as ChatGateway,
-      {} as GameService,
-      {} as LobbyService,
+      gameService as unknown as GameService,
+      lobbyService as unknown as LobbyService,
     );
     server = {} as Server;
     gateway.server = server;
@@ -289,6 +309,30 @@ describe('AcidRainGateway leave_room', () => {
       gateway.handleLeaveRoom(client, { roomId: 'room-1' }),
     ).rejects.toThrow('Unauthorized');
     expect(acidRainService.leaveMatch).not.toHaveBeenCalled();
+  });
+
+  it('removes the leaver from the lobby room.players so they stop appearing as a rejoinable member (#197)', async () => {
+    await gateway.handleLeaveRoom(client, { roomId: 'room-1' });
+
+    expect(gameService.leaveRoom).toHaveBeenCalledWith('room-1', 'host-id');
+    expect(lobbyService.broadcast.mock.calls).toHaveLength(1);
+    const [eventType, payload] = lobbyService.broadcast.mock.calls[0];
+    expect(eventType).toBe('ROOM_UPDATED');
+    const room = (payload as { room: { id: string; players: unknown[] } }).room;
+    expect(room.id).toBe('room-1');
+    expect(room.players).toEqual([
+      expect.objectContaining({ userId: 'guest-id' }),
+    ]);
+  });
+
+  it('broadcasts ROOM_CLOSED when the leaver was the last player in the lobby room (#197)', async () => {
+    gameService.leaveRoom.mockResolvedValue(null);
+
+    await gateway.handleLeaveRoom(client, { roomId: 'room-1' });
+
+    expect(lobbyService.broadcast).toHaveBeenCalledWith('ROOM_CLOSED', {
+      roomId: 'room-1',
+    });
   });
 });
 
