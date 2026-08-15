@@ -288,6 +288,13 @@ export class AcidRainService implements OnModuleInit {
 
   // ─── 스폰 루프 ────────────────────────────────────────────────────────────
 
+  // 틱당 동시 스폰 개수. 2개로 시작해 30초마다 1개씩 늘어나 4개에서 바닥(천장)을
+  // 친다 — 스폰 간격 램프와 별개 축으로 밀도를 올린다(#195). maxActiveWords 상한은
+  // 그대로 두므로, 상한 근처에서는 spawnOneWord가 false를 반환하며 자연히 멈춘다.
+  private spawnCountForElapsed(elapsedSec: number): number {
+    return Math.min(4, 2 + Math.floor(elapsedSec / 30));
+  }
+
   private startSpawnLoop(session: AcidRainSession, server: Server): void {
     const scheduleNext = (elapsedSec: number) => {
       const interval = Math.max(400, 1000 - 50 * Math.floor(elapsedSec / 10));
@@ -302,62 +309,10 @@ export class AcidRainService implements OnModuleInit {
         return;
       }
       const elapsed = (Date.now() - session.startedAt) / 1000;
-      if (session.activeWords.size >= session.maxActiveWords) {
-        scheduleNext(elapsed);
-        return;
+      const spawnCount = this.spawnCountForElapsed(elapsed);
+      for (let i = 0; i < spawnCount; i++) {
+        if (!this.spawnOneWord(session, server, elapsed)) break;
       }
-
-      let word = this.wordDictionaryService.pickWord(elapsed);
-      const activeTexts = new Set(
-        Array.from(session.activeWords.values()).map((active) => active.text),
-      );
-      for (
-        let attempt = 0;
-        attempt < 10 && activeTexts.has(word.text);
-        attempt++
-      ) {
-        word = this.wordDictionaryService.pickWord(elapsed);
-      }
-      if (activeTexts.has(word.text)) {
-        scheduleNext(elapsed);
-        return;
-      }
-      const wordId = `w_${randomUUID().slice(0, 8)}`;
-      const lane = this.assignLane(session);
-      const fallDurationMs = Math.round(
-        (4000 + 250 * word.keystrokes) * Math.max(0.6, 1 - elapsed / 300),
-      );
-      const spawnedAt = new Date().toISOString();
-      const landAtMs = Date.now() + fallDurationMs;
-      const damage = this.damageForKeystrokes(word.keystrokes);
-
-      const active: ActiveWord = {
-        wordId,
-        text: word.text,
-        keystrokes: word.keystrokes,
-        lane,
-        fallDurationMs,
-        spawnedAt,
-        landAt: landAtMs,
-        damage,
-      };
-      session.activeWords.set(wordId, active);
-      session.stateVersion += 1;
-
-      const payload: WordSpawnPayload = {
-        wordId,
-        text: word.text,
-        keystrokes: word.keystrokes,
-        lane,
-        fallDurationMs,
-        spawnedAt,
-        landAt: new Date(landAtMs).toISOString(),
-        damage,
-      };
-      server.to(`game:${session.roomId}`).emit('word_spawn', payload);
-      wordSpawnedTotal.inc();
-      this.notifyAiStateChanged(session, server, 'SPAWN');
-      void this.persistSession(session);
 
       // 다음 스폰 간격 계산 후 재귀 호출
       scheduleNext(elapsed);
@@ -365,6 +320,66 @@ export class AcidRainService implements OnModuleInit {
 
     const initialInterval = 1000;
     session.spawnLoopTimer = setTimeout(tick, initialInterval);
+  }
+
+  /** 활성 단어 1개를 스폰한다. 상한 도달 또는 중복 텍스트로 스폰하지 못하면 false. */
+  private spawnOneWord(
+    session: AcidRainSession,
+    server: Server,
+    elapsed: number,
+  ): boolean {
+    if (session.activeWords.size >= session.maxActiveWords) return false;
+
+    let word = this.wordDictionaryService.pickWord(elapsed);
+    const activeTexts = new Set(
+      Array.from(session.activeWords.values()).map((active) => active.text),
+    );
+    for (
+      let attempt = 0;
+      attempt < 10 && activeTexts.has(word.text);
+      attempt++
+    ) {
+      word = this.wordDictionaryService.pickWord(elapsed);
+    }
+    if (activeTexts.has(word.text)) return false;
+
+    const wordId = `w_${randomUUID().slice(0, 8)}`;
+    const lane = this.assignLane(session);
+    const fallDurationMs = Math.round(
+      (4000 + 250 * word.keystrokes) * Math.max(0.6, 1 - elapsed / 300),
+    );
+    const spawnedAt = new Date().toISOString();
+    const landAtMs = Date.now() + fallDurationMs;
+    const damage = this.damageForKeystrokes(word.keystrokes);
+
+    const active: ActiveWord = {
+      wordId,
+      text: word.text,
+      keystrokes: word.keystrokes,
+      lane,
+      fallDurationMs,
+      spawnedAt,
+      landAt: landAtMs,
+      damage,
+    };
+    session.activeWords.set(wordId, active);
+    session.stateVersion += 1;
+
+    const payload: WordSpawnPayload = {
+      wordId,
+      text: word.text,
+      keystrokes: word.keystrokes,
+      lane,
+      fallDurationMs,
+      spawnedAt,
+      landAt: new Date(landAtMs).toISOString(),
+      damage,
+    };
+    server.to(`game:${session.roomId}`).emit('word_spawn', payload);
+    wordSpawnedTotal.inc();
+    this.notifyAiStateChanged(session, server, 'SPAWN');
+    void this.persistSession(session);
+    return true;
   }
 
   // 참가자 수에 비례해 활성 단어 수 상한(maxActiveWords)이 레인 수(LANE_COUNT=5)를
